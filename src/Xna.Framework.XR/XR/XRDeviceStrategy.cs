@@ -44,6 +44,10 @@ namespace Microsoft.Xna.Platform.XR
         public abstract HandJointCollectionStrategy CreateHandJointCollectionStrategy(int handIndex);
         public abstract HandJointCollection GetHandJoints(int handIndex);
 
+        public abstract bool IsSceneSupported { get; }
+        public abstract RoomInfo? RoomInfo { get; }
+        public abstract void QueryRoomInfoAsync();
+
         #region IDisposable
         ~XRDeviceStrategy()
         {

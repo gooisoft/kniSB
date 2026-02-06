@@ -233,6 +233,21 @@ namespace Microsoft.Xna.Framework.XR
         }
 
 
+        public override bool IsSceneSupported
+        {
+            get { return false; }
+        }
+
+        public override RoomInfo? RoomInfo
+        {
+            get { return null; }
+        }
+
+        public override void QueryRoomInfoAsync()
+        {
+            throw new NotSupportedException("Scene scanning is not supported on this platform.");
+        }
+
         static unsafe Matrix CreateProjection(   float tanAngleLeft, float tanAngleRight,
                                                  float tanAngleBottom, float tanAngleTop,
                                                  float nearZ, float farZ)

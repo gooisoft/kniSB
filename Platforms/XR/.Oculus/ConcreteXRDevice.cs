@@ -66,6 +66,18 @@ namespace Microsoft.Xna.Platform.XR
         OxrPassthroughFB _passthroughFB;
         OxrPassthroughLayerFB _passthroughLayerFB;
 
+        // Scene query state
+        bool _isSceneSupported;
+        RoomInfo? _roomInfo;
+        ulong _sceneQueryRequestId;
+        bool _sceneQueryPending;
+        xrQuerySpacesFBDelegate _pfnQuerySpacesFB;
+        xrRetrieveSpaceQueryResultsFBDelegate _pfnRetrieveSpaceQueryResultsFB;
+        xrGetSpaceComponentStatusFBDelegate _pfnGetSpaceComponentStatusFB;
+        xrSetSpaceComponentStatusFBDelegate _pfnSetSpaceComponentStatusFB;
+        xrGetSpaceRoomLayoutFBDelegate _pfnGetSpaceRoomLayoutFB;
+        xrGetSpaceBoundingBox3DFBDelegate _pfnGetSpaceBoundingBox3DFB;
+
         bool _useSimpleProfile;
 
         OxrActionSet _runningActionSet;
@@ -172,6 +184,16 @@ namespace Microsoft.Xna.Platform.XR
         public override bool IsTrackFloorLevelEnabled
         {
             get { return _isTrackFloorLevelEnabled; }
+        }
+
+        public override bool IsSceneSupported
+        {
+            get { return _isSceneSupported; }
+        }
+
+        public override RoomInfo? RoomInfo
+        {
+            get { return _roomInfo; }
         }
 
 
@@ -1005,6 +1027,24 @@ namespace Microsoft.Xna.Platform.XR
             }
             Console.WriteLine("XR session created successfully.");
 
+            // Load scene extension function pointers
+            _isSceneSupported = _extensions.Contains("XR_FB_scene")
+                             && _extensions.Contains("XR_FB_spatial_entity")
+                             && _extensions.Contains("XR_FB_spatial_entity_query");
+            if (_isSceneSupported)
+            {
+                _oxrInstance.GetInstanceProcAddr("xrQuerySpacesFB", out _pfnQuerySpacesFB);
+                _oxrInstance.GetInstanceProcAddr("xrRetrieveSpaceQueryResultsFB", out _pfnRetrieveSpaceQueryResultsFB);
+                _oxrInstance.GetInstanceProcAddr("xrGetSpaceComponentStatusFB", out _pfnGetSpaceComponentStatusFB);
+                _oxrInstance.GetInstanceProcAddr("xrSetSpaceComponentStatusFB", out _pfnSetSpaceComponentStatusFB);
+                _oxrInstance.GetInstanceProcAddr("xrGetSpaceRoomLayoutFB", out _pfnGetSpaceRoomLayoutFB);
+                _oxrInstance.GetInstanceProcAddr("xrGetSpaceBoundingBox3DFB", out _pfnGetSpaceBoundingBox3DFB);
+                Console.WriteLine("Scene extensions loaded successfully.");
+            }
+            else
+            {
+                Console.WriteLine("Scene extensions not available on this runtime.");
+            }
 
             // App only supports the primary stereo view config.
             const ViewConfigurationType supportedViewConfigType = ViewConfigurationType.PrimaryStereo;
@@ -1691,6 +1731,14 @@ namespace Microsoft.Xna.Platform.XR
 
         public unsafe delegate Result xrPerfSettingsSetPerformanceLevelEXT(Session xrSession, PerfSettingsDomainEXT perfDomain, PerfSettingsLevelEXT perfLevel);
 
+        // Scene query delegates
+        public unsafe delegate Result xrQuerySpacesFBDelegate(Session session, SpaceQueryInfoBaseHeaderFB* info, ulong* requestId);
+        public unsafe delegate Result xrRetrieveSpaceQueryResultsFBDelegate(Session session, ulong requestId, SpaceQueryResultsFB* results);
+        public unsafe delegate Result xrGetSpaceComponentStatusFBDelegate(Space space, SpaceComponentTypeFB componentType, SpaceComponentStatusFB* status);
+        public unsafe delegate Result xrSetSpaceComponentStatusFBDelegate(Space space, SpaceComponentStatusSetInfoFB* info, ulong* requestId);
+        public unsafe delegate Result xrGetSpaceRoomLayoutFBDelegate(Session session, Space space, RoomLayoutFB* roomLayoutOutput);
+        public unsafe delegate Result xrGetSpaceBoundingBox3DFBDelegate(Session session, Space space, Rect3DfFB* boundingBox3DOutput);
+
         const int ovrMaxLayerCount = 16;
         const int ovrMaxNumEyes = 2;
 
@@ -2263,6 +2311,167 @@ namespace Microsoft.Xna.Platform.XR
             return;
         }
 
+        public override unsafe void QueryRoomInfoAsync()
+        {
+            if (!_isSceneSupported)
+            {
+                Console.WriteLine("QueryRoomInfoAsync: Scene not supported.");
+                return;
+            }
+            if (_sceneQueryPending)
+            {
+                Console.WriteLine("QueryRoomInfoAsync: Query already pending.");
+                return;
+            }
+
+            // Query for entities with RoomLayout component
+            SpaceComponentFilterInfoFB componentFilter = default;
+            componentFilter.Type = StructureType.SpaceComponentFilterInfoFB;
+            componentFilter.Next = null;
+            componentFilter.ComponentType = SpaceComponentTypeFB.RoomLayoutFB;
+
+            SpaceQueryInfoFB queryInfo = default;
+            queryInfo.Type = StructureType.SpaceQueryInfoFB;
+            queryInfo.Next = null;
+            queryInfo.QueryAction = SpaceQueryActionFB.LoadFB;
+            queryInfo.MaxResultCount = 50;
+            queryInfo.Timeout = long.MaxValue; // XR_INFINITE_DURATION
+            queryInfo.Filter = (SpaceFilterInfoBaseHeaderFB*)(&componentFilter);
+            queryInfo.ExcludeFilter = null;
+
+            ulong requestId = 0;
+            Result xrResult = _pfnQuerySpacesFB(_oxrSession.Session,
+                (SpaceQueryInfoBaseHeaderFB*)(&queryInfo), &requestId);
+
+            if (xrResult == Result.Success)
+            {
+                _sceneQueryRequestId = requestId;
+                _sceneQueryPending = true;
+                Console.WriteLine("QueryRoomInfoAsync: Query submitted, requestId={0}", requestId);
+            }
+            else
+            {
+                Console.WriteLine("QueryRoomInfoAsync: QuerySpacesFB failed: {0}", xrResult);
+            }
+        }
+
+        private unsafe void ProcessSceneQueryResults()
+        {
+            // Two-call idiom: first get count
+            SpaceQueryResultsFB results = default;
+            results.Type = StructureType.SpaceQueryResultsFB;
+            results.Next = null;
+            results.ResultCapacityInput = 0;
+            results.ResultCountOutput = 0;
+            results.Results = null;
+
+            Result xrResult = _pfnRetrieveSpaceQueryResultsFB(_oxrSession.Session, _sceneQueryRequestId, &results);
+            if (xrResult != Result.Success)
+            {
+                Console.WriteLine("ProcessSceneQueryResults: RetrieveSpaceQueryResultsFB (count) failed: {0}", xrResult);
+                return;
+            }
+
+            uint count = results.ResultCountOutput;
+            Console.WriteLine("ProcessSceneQueryResults: Found {0} room entities", count);
+
+            if (count == 0)
+            {
+                Console.WriteLine("ProcessSceneQueryResults: No room entities found. Has Space Setup been completed?");
+                return;
+            }
+
+            // Second call: fill array
+            SpaceQueryResultFB* resultArray = stackalloc SpaceQueryResultFB[(int)count];
+            results.ResultCapacityInput = count;
+            results.ResultCountOutput = 0;
+            results.Results = resultArray;
+
+            xrResult = _pfnRetrieveSpaceQueryResultsFB(_oxrSession.Session, _sceneQueryRequestId, &results);
+            if (xrResult != Result.Success)
+            {
+                Console.WriteLine("ProcessSceneQueryResults: RetrieveSpaceQueryResultsFB (fill) failed: {0}", xrResult);
+                return;
+            }
+
+            // Process each room entity
+            for (uint i = 0; i < results.ResultCountOutput; i++)
+            {
+                Space space = resultArray[i].Space;
+                UuidEXT uuid = resultArray[i].Uuid;
+                Console.WriteLine("ProcessSceneQueryResults: Room entity {0}, UUID bytes: {1:X2}{2:X2}{3:X2}{4:X2}...",
+                    i, uuid.Data[0], uuid.Data[1], uuid.Data[2], uuid.Data[3]);
+
+                // Get room layout (two-call idiom for wall UUIDs)
+                RoomLayoutFB roomLayout = default;
+                roomLayout.Type = StructureType.RoomLayoutFB;
+                roomLayout.Next = null;
+                roomLayout.WallUuidCapacityInput = 0;
+                roomLayout.WallUuids = null;
+
+                xrResult = _pfnGetSpaceRoomLayoutFB(_oxrSession.Session, space, &roomLayout);
+                if (xrResult != Result.Success)
+                {
+                    Console.WriteLine("ProcessSceneQueryResults: GetSpaceRoomLayoutFB (count) failed: {0}", xrResult);
+                    continue;
+                }
+
+                uint wallCount = roomLayout.WallUuidCountOutput;
+                Console.WriteLine("ProcessSceneQueryResults: Room has {0} walls", wallCount);
+
+                // Second call with wall UUIDs allocated
+                UuidEXT* wallUuids = stackalloc UuidEXT[(int)wallCount];
+                roomLayout.WallUuidCapacityInput = wallCount;
+                roomLayout.WallUuids = wallUuids;
+
+                xrResult = _pfnGetSpaceRoomLayoutFB(_oxrSession.Session, space, &roomLayout);
+                if (xrResult != Result.Success)
+                {
+                    Console.WriteLine("ProcessSceneQueryResults: GetSpaceRoomLayoutFB (fill) failed: {0}", xrResult);
+                    continue;
+                }
+
+                Console.WriteLine("ProcessSceneQueryResults: Floor UUID: {0:X2}{1:X2}..., Ceiling UUID: {2:X2}{3:X2}...",
+                    roomLayout.FloorUuid.Data[0], roomLayout.FloorUuid.Data[1],
+                    roomLayout.CeilingUuid.Data[0], roomLayout.CeilingUuid.Data[1]);
+
+                // Try to get 3D bounding box of the room entity itself
+                Rect3DfFB bbox3d = default;
+                xrResult = _pfnGetSpaceBoundingBox3DFB(_oxrSession.Session, space, &bbox3d);
+                if (xrResult == Result.Success)
+                {
+                    Console.WriteLine("ProcessSceneQueryResults: Room 3D BBox - Offset=({0:F3}, {1:F3}, {2:F3}) Extent=({3:F3}w x {4:F3}h x {5:F3}d) meters",
+                        bbox3d.Offset.X, bbox3d.Offset.Y, bbox3d.Offset.Z,
+                        bbox3d.Extent.Width, bbox3d.Extent.Height, bbox3d.Extent.Depth);
+
+                    _roomInfo = new RoomInfo
+                    {
+                        Width = bbox3d.Extent.Width,
+                        Height = bbox3d.Extent.Height,
+                        Depth = bbox3d.Extent.Depth,
+                        WallCount = (int)wallCount,
+                        IsValid = true
+                    };
+
+                    Console.WriteLine("ProcessSceneQueryResults: RoomInfo set - {0:F2}m x {1:F2}m x {2:F2}m, {3} walls",
+                        _roomInfo.Value.Width, _roomInfo.Value.Depth, _roomInfo.Value.Height, _roomInfo.Value.WallCount);
+                }
+                else
+                {
+                    Console.WriteLine("ProcessSceneQueryResults: GetSpaceBoundingBox3DFB failed: {0}. Room entity may not have Bounded3D component.", xrResult);
+                    // Still populate with wall count even without bounding box
+                    _roomInfo = new RoomInfo
+                    {
+                        WallCount = (int)wallCount,
+                        IsValid = false
+                    };
+                }
+
+                // Use the first room entity found
+                break;
+            }
+        }
+
         private unsafe void ovrApp_HandleXrEvents()
         {
             Result xrResult;
@@ -2374,6 +2583,38 @@ namespace Microsoft.Xna.Platform.XR
                                 default:
                                     Console.WriteLine("Unknown State: {0}.", session_state_changed_event->State);
                                     break;
+                            }
+                        }
+                        break;
+
+                    case StructureType.EventDataSpaceQueryResultsAvailableFB:
+                        {
+                            EventDataSpaceQueryResultsAvailableFB* queryResultsEvent =
+                                (EventDataSpaceQueryResultsAvailableFB*)(baseEventHeader);
+                            Console.WriteLine(
+                                "xrPollEvent: received XR_TYPE_EVENT_DATA_SPACE_QUERY_RESULTS_AVAILABLE_FB: requestId={0}",
+                                queryResultsEvent->RequestId);
+
+                            if (_sceneQueryPending && queryResultsEvent->RequestId == _sceneQueryRequestId)
+                            {
+                                ProcessSceneQueryResults();
+                            }
+                        }
+                        break;
+
+                    case StructureType.EventDataSpaceQueryCompleteFB:
+                        {
+                            EventDataSpaceQueryCompleteFB* queryCompleteEvent =
+                                (EventDataSpaceQueryCompleteFB*)(baseEventHeader);
+                            Console.WriteLine(
+                                "xrPollEvent: received XR_TYPE_EVENT_DATA_SPACE_QUERY_COMPLETE_FB: requestId={0} result={1}",
+                                queryCompleteEvent->RequestId,
+                                queryCompleteEvent->Result);
+
+                            if (_sceneQueryPending && queryCompleteEvent->RequestId == _sceneQueryRequestId)
+                            {
+                                _sceneQueryPending = false;
+                                Console.WriteLine("Scene query completed. RoomInfo valid: {0}", _roomInfo.HasValue && _roomInfo.Value.IsValid);
                             }
                         }
                         break;

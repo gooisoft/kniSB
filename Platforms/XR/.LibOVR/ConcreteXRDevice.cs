@@ -277,6 +277,21 @@ namespace Microsoft.Xna.Platform.XR.LibOVR
             // return _strategy.GetHandJoints(handIndex);
         }
 
+        public override bool IsSceneSupported
+        {
+            get { return false; }
+        }
+
+        public override RoomInfo? RoomInfo
+        {
+            get { return null; }
+        }
+
+        public override void QueryRoomInfoAsync()
+        {
+            throw new NotSupportedException("Scene scanning is not supported on this platform.");
+        }
+
         public override void EndSessionAsync()
         {
             throw new NotImplementedException();

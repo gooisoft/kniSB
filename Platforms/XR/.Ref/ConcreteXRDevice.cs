@@ -105,6 +105,21 @@ namespace Microsoft.Xna.Framework.XR
             throw new PlatformNotSupportedException();
         }
 
+        public override bool IsSceneSupported
+        {
+            get { return false; }
+        }
+
+        public override RoomInfo? RoomInfo
+        {
+            get { return null; }
+        }
+
+        public override void QueryRoomInfoAsync()
+        {
+            throw new NotSupportedException("Scene scanning is not supported on this platform.");
+        }
+
         public override void EndSessionAsync()
         {
             throw new PlatformNotSupportedException();

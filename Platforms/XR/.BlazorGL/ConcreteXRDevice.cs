@@ -349,6 +349,21 @@ namespace Microsoft.Xna.Framework.XR
             return _handJoints[handIndex];
         }
 
+        public override bool IsSceneSupported
+        {
+            get { return false; }
+        }
+
+        public override RoomInfo? RoomInfo
+        {
+            get { return null; }
+        }
+
+        public override void QueryRoomInfoAsync()
+        {
+            throw new NotSupportedException("Scene scanning is not supported on this platform.");
+        }
+
         public override void EndSessionAsync()
         {
             _xrsession.End();

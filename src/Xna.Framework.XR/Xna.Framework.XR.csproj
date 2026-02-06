@@ -38,6 +38,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="XR\RoomInfo.cs" />
     <Compile Include="XR\HandJointCollection.cs" />
     <Compile Include="XR\HandJointCollectionStrategy.cs" />
     <Compile Include="XR\HandJointState.cs" />

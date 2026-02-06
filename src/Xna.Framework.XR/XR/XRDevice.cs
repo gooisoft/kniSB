@@ -120,6 +120,21 @@ namespace Microsoft.Xna.Framework.XR
             return _strategy.GetHandJoints(handIndex);
         }
 
+        public bool IsSceneSupported
+        {
+            get { return _strategy.IsSceneSupported; }
+        }
+
+        public RoomInfo? RoomInfo
+        {
+            get { return _strategy.RoomInfo; }
+        }
+
+        public void QueryRoomInfoAsync()
+        {
+            _strategy.QueryRoomInfoAsync();
+        }
+
         #region IDisposable
         ~XRDevice()
         {
