@@ -27,8 +27,11 @@ namespace Microsoft.Xna.Platform.XR
                     _jointSpaces[i] = xrHand[(nkast.Wasm.XR.XRHandJoint)i];
             }
 
-            currentXRFrame.FillPoses(_jointSpaces, referenceSpace, _jointTransforms);
+            bool filledPoses = currentXRFrame.FillPoses(_jointSpaces, referenceSpace, _jointTransforms);
             currentXRFrame.FillJointRadii(_jointSpaces, _jointRadii);
+
+            // Set IsActive based on whether we got valid pose data
+            _isActive = filledPoses;
 
             for (int i = 0; i < _jointSpaces.Length; i++)
             {

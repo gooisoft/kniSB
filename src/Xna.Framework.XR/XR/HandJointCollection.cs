@@ -17,6 +17,12 @@ namespace Microsoft.Xna.Framework.XR
 
         public int Length { get { return _strategy.Length; } }
 
+        /// <summary>
+        /// Indicates whether the hand is currently being tracked by the cameras.
+        /// When false, joint data may be stale and should not be used for gesture detection.
+        /// </summary>
+        public bool IsActive { get { return _strategy.IsActive; } }
+
         public HandJointState this[XRHandJoint handJoint]
         {
             get { return _strategy[handJoint]; }

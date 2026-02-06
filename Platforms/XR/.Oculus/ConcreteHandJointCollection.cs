@@ -82,7 +82,14 @@ namespace Microsoft.Xna.Platform.XR
                     handJointsLocateInfo.Time = time;
                     Result xrResult = _pfnLocateHandJointsEXT(_handTracker, &handJointsLocateInfo, &handJointLocations);
 
-                    if (handJointLocations.IsActive == 1)
+                    bool wasActive = _isActive;
+                    _isActive = (handJointLocations.IsActive == 1);
+                    System.Diagnostics.Trace.WriteLine($"[KNISB] Hand {_handIndex} IsActive={_isActive} (raw={handJointLocations.IsActive})");
+                    if (wasActive != _isActive)
+                    {
+                        System.Diagnostics.Trace.WriteLine($"[KNISB] Hand {_handIndex} IsActive CHANGED: {wasActive} -> {_isActive}");
+                    }
+                    if (_isActive)
                     {
                         for (int i = 0; i < _jointLocations.Length; i++)
                         {
