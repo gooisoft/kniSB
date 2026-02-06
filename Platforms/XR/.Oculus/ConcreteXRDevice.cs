@@ -873,6 +873,12 @@ namespace Microsoft.Xna.Platform.XR
             if (this.SessionMode == XRSessionMode.AR)
                 requiredExtensionNames.Add(nameof(OxrExtensions.XR_FB_passthrough));
 
+            // Scene understanding extensions (raw strings — not in nkast.LibOXR's OxrExtensions)
+            requiredExtensionNames.Add("XR_FB_spatial_entity");
+            requiredExtensionNames.Add("XR_FB_spatial_entity_query");
+            requiredExtensionNames.Add("XR_FB_spatial_entity_storage");
+            requiredExtensionNames.Add("XR_FB_scene");
+
             // Check the list of required extensions against what is supported by the runtime.
             uint numRequiredExtensions = (uint)requiredExtensionNames.Count;
             for (int i = 0; i < numRequiredExtensions; i++)
