@@ -186,6 +186,7 @@ namespace Microsoft.Xna.Platform.Graphics
 
             // create a temporary context to query GLES version
             EGLContext eglContext = null;
+            EGLSurface pbufferSurface = null;
             try
             {
                 int[] configAttribs = new int[]
@@ -207,8 +208,24 @@ namespace Microsoft.Xna.Platform.Graphics
                 eglContext = _ogl.Egl.EglCreateContext(EglDisplay, config, EGL10.EglNoContext, contextAttribs);
                 _ogl.CheckGLError();
 
-                _ogl.Egl.EglMakeCurrent(EglDisplay, EGL10.EglNoSurface, EGL10.EglNoSurface, eglContext);
-                _ogl.CheckGLError();
+                // A surfaceless make-current needs EGL_KHR_surfaceless_context. Where a driver refuses
+                // it, every glGetInteger below silently leaves its out-parameter at 0 (CheckGLError is
+                // DEBUG-only, and there is no current context to report an error anyway), so
+                // _maxTextureSize reads 0, Platform_IsProfileSupported(HiDef) says false, and the game
+                // is handed Reach on hardware that supports 16384-pixel textures. Thortspace then dies
+                // in its first Draw creating a >2048 UI cache texture (Pixel 6 Pro, Android 12, 1.6.907).
+                // So: check the make-current result, and fall back to a 1x1 pbuffer surface.
+                bool current = _ogl.Egl.EglMakeCurrent(EglDisplay, EGL10.EglNoSurface, EGL10.EglNoSurface, eglContext);
+                if (!current)
+                {
+                    Log.Warn("AndroidGameView", "Surfaceless EglMakeCurrent failed (" + _ogl.GetEglErrorAsString() + "); probing GL limits on a pbuffer surface");
+                    int[] pbufferAttribs = new int[] { EGL10.EglWidth, 1, EGL10.EglHeight, 1, EGL10.EglNone };
+                    pbufferSurface = _ogl.Egl.EglCreatePbufferSurface(EglDisplay, config, pbufferAttribs);
+                    if (pbufferSurface == EGL10.EglNoSurface)
+                        pbufferSurface = null;
+                    if (pbufferSurface != null)
+                        current = _ogl.Egl.EglMakeCurrent(EglDisplay, pbufferSurface, pbufferSurface, eglContext);
+                }
 
                 _ogl.GetInteger(GetParamName.MajorVersion, out int eglMajorVersion);
                 _ogl.CheckGLError();
@@ -222,11 +239,20 @@ namespace Microsoft.Xna.Platform.Graphics
                 _ogl.CheckGLError();
                 _ogl.GetInteger(GetParamName.MaxSamples, out _maxMultiSampleCount);
 
+                // Make the probe visible: Thortspace logs GraphicsAdapter.Description when it picks a
+                // profile, and an empty description was all the crash logs ever had to show.
+                _description = "GLES " + eglMajorVersion + "." + eglMinorVersion
+                    + " maxTexture=" + _maxTextureSize + " maxVertexAttribs=" + _maxVertexBufferSlots
+                    + " maxSamples=" + _maxMultiSampleCount + (current ? "" : " (probe context not current)");
+                Log.Info("AndroidGameView", "Adapter probe: " + _description);
+
                 _ogl.Egl.EglMakeCurrent(EglDisplay, EGL10.EglNoSurface, EGL10.EglNoSurface, EGL10.EglNoContext);
                 _ogl.CheckGLError();
             }
             finally
             {
+                if (pbufferSurface != null)
+                    _ogl.Egl.EglDestroySurface(this.EglDisplay, pbufferSurface);
                 if (eglContext != null)
                     _ogl.Egl.EglDestroyContext(this.EglDisplay, eglContext);
             }
