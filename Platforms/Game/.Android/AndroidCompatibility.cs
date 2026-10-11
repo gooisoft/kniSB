@@ -54,7 +54,47 @@ namespace Microsoft.Xna.Framework
 
         private Orientation GetDeviceNaturalOrientation(Activity activity)
         {
-            // check if MainActivity setup is correct. 
+            // Thortspace: read the natural orientation from the panel itself. Display.Mode's physical size does not
+            // rotate, so it cannot be caught mid-rotation. The pairing below (Configuration.Orientation against
+            // Display.Rotation) can be: at OnCreate the two readings can disagree for a moment, for example while
+            // the activity's RequestedOrientation is being reset to FullSensor with the phone held sideways. A
+            // phone then latched NaturalOrientation = Landscape for the life of the process, and every rotation
+            // afterwards showed the WRONG orientation (portrait held = landscape drawn, and vice versa).
+            Orientation legacy = Orientation.Undefined;
+            Exception legacyError = null;
+            try { legacy = GetDeviceNaturalOrientationFromConfiguration(activity); }
+            catch (InvalidOperationException e) { legacyError = e; }
+            Orientation result = legacy;
+            string panel = "n/a";
+            try
+            {
+                if (Build.VERSION.SdkInt >= BuildVersionCodes.M)
+                {
+                    Display.Mode mode = activity.WindowManager.DefaultDisplay.GetMode();
+                    if (mode != null && mode.PhysicalWidth > 0 && mode.PhysicalHeight > 0)
+                    {
+                        panel = mode.PhysicalWidth + "x" + mode.PhysicalHeight;
+                        if (mode.PhysicalWidth != mode.PhysicalHeight)
+                            result = mode.PhysicalWidth > mode.PhysicalHeight ? Orientation.Landscape : Orientation.Portrait;
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                result = legacy;
+            }
+            if (result == Orientation.Undefined)
+                throw legacyError ?? new InvalidOperationException("NaturalOrientation detection failed.");
+            Android.Util.Log.Info("KNI", "NaturalOrientation " + result + " (panel " + panel
+                + ", configuration " + activity.Resources.Configuration.Orientation
+                + ", rotation " + activity.WindowManager.DefaultDisplay.Rotation
+                + ", configuration-based guess " + legacy + ")");
+            return result;
+        }
+
+        private Orientation GetDeviceNaturalOrientationFromConfiguration(Activity activity)
+        {
+            // check if MainActivity setup is correct.
             Android.Content.PM.ScreenOrientation screenOrientation = activity.RequestedOrientation;
             if (screenOrientation != Android.Content.PM.ScreenOrientation.FullSensor)
                 throw new InvalidOperationException("NaturalOrientation detection failed. Set ScreenOrientation in MainActivity to FullSensor.");
