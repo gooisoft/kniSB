@@ -120,19 +120,44 @@ namespace Microsoft.Xna.Framework.XR
             return _strategy.GetHandJoints(handIndex);
         }
 
-        public bool IsSceneSupported
+        public bool IsEnvironmentDepthSupported
         {
-            get { return _strategy.IsSceneSupported; }
+            get { return _strategy.IsEnvironmentDepthSupported; }
         }
 
-        public RoomInfo? RoomInfo
+        public void BeginEnvironmentDepth()
         {
-            get { return _strategy.RoomInfo; }
+            _strategy.BeginEnvironmentDepth();
         }
 
-        public void QueryRoomInfoAsync()
+        public bool IsEnvironmentDepthAvailable
         {
-            _strategy.QueryRoomInfoAsync();
+            get { return _strategy.IsEnvironmentDepthAvailable; }
+        }
+
+        public float EnvironmentDepthNearZ
+        {
+            get { return _strategy.EnvironmentDepthNearZ; }
+        }
+
+        public Matrix GetDepthViewProjection(int eyeIndex, Matrix cameraWorldMatrix)
+        {
+            return _strategy.GetDepthViewProjection(eyeIndex, cameraWorldMatrix);
+        }
+
+        public void BindDepthTextureToUnit(int unit)
+        {
+            _strategy.BindDepthTextureToUnit(unit);
+        }
+
+        public void BindDepthTextureOnly(int unit)
+        {
+            _strategy.BindDepthTextureOnly(unit);
+        }
+
+        public Texture2D EnvironmentDepthTexture
+        {
+            get { return _strategy.EnvironmentDepthTexture; }
         }
 
         #region IDisposable

@@ -30,6 +30,11 @@ namespace Microsoft.Xna.Framework.Graphics
             set { _strategy[index] = value; }
         }
 
+        public void ClearDirty(int index)
+        {
+            _strategy.ClearDirty(index);
+        }
+
         internal void Clear()
         {
             _strategy.Clear();

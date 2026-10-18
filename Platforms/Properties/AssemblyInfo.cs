@@ -36,3 +36,5 @@ using System.Resources;
 // don't need to load any language specific resources.
 [assembly: NeutralResourcesLanguageAttribute("en-US")]
 
+
+[assembly:System.Runtime.CompilerServices.InternalsVisibleTo("Thortspace")]

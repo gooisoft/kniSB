@@ -27,7 +27,7 @@
     <ProjectGuid>{3472997A-CD26-4D0D-B64A-795F913E6777}</ProjectGuid>
     <AssemblyName>Kni.Platform</AssemblyName>
     <RootNamespace>Microsoft.Xna.Framework</RootNamespace>
-    <DefineConstants>ANDROID;OCULUS;OPENAL;OPENGL;GLES;STBSHARP_INTERNAL</DefineConstants>
+    <DefineConstants>ANDROID;OCULUS;OPENAL;OPENGL;GLES;STBSHARP_INTERNAL;TRACE</DefineConstants>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <NoWarn>CS0067;CS1591;CS1574;CS0419</NoWarn>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>

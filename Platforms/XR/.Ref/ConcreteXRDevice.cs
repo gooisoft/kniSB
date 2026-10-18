@@ -105,20 +105,36 @@ namespace Microsoft.Xna.Framework.XR
             throw new PlatformNotSupportedException();
         }
 
-        public override bool IsSceneSupported
+        public override bool IsEnvironmentDepthSupported
         {
             get { return false; }
         }
 
-        public override RoomInfo? RoomInfo
+        public override void BeginEnvironmentDepth()
         {
-            get { return null; }
         }
 
-        public override void QueryRoomInfoAsync()
+        public override bool IsEnvironmentDepthAvailable
         {
-            throw new NotSupportedException("Scene scanning is not supported on this platform.");
+            get { return false; }
         }
+
+        public override float EnvironmentDepthNearZ
+        {
+            get { return 0f; }
+        }
+
+        public override Matrix GetDepthViewProjection(int eyeIndex, Matrix cameraWorldMatrix)
+        {
+            return Matrix.Identity;
+        }
+
+        public override void BindDepthTextureToUnit(int unit)
+        {
+        }
+
+        public override void BindDepthTextureOnly(int unit) { }
+        public override Texture2D EnvironmentDepthTexture => null;
 
         public override void EndSessionAsync()
         {

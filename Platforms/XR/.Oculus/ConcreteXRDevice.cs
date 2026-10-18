@@ -10,6 +10,7 @@ using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input.XR;
 using Microsoft.Xna.Platform;
+using Microsoft.Xna.Platform.Graphics;
 using Microsoft.Xna.Platform.Input.XR;
 using Microsoft.Xna.Framework.XR;
 using nkast.LibOXR;
@@ -66,17 +67,37 @@ namespace Microsoft.Xna.Platform.XR
         OxrPassthroughFB _passthroughFB;
         OxrPassthroughLayerFB _passthroughLayerFB;
 
-        // Scene query state
-        bool _isSceneSupported;
-        RoomInfo? _roomInfo;
-        ulong _sceneQueryRequestId;
-        bool _sceneQueryPending;
-        xrQuerySpacesFBDelegate _pfnQuerySpacesFB;
-        xrRetrieveSpaceQueryResultsFBDelegate _pfnRetrieveSpaceQueryResultsFB;
-        xrGetSpaceComponentStatusFBDelegate _pfnGetSpaceComponentStatusFB;
-        xrSetSpaceComponentStatusFBDelegate _pfnSetSpaceComponentStatusFB;
-        xrGetSpaceRoomLayoutFBDelegate _pfnGetSpaceRoomLayoutFB;
-        xrGetSpaceBoundingBox3DFBDelegate _pfnGetSpaceBoundingBox3DFB;
+        // Environment depth state (XR_META_environment_depth)
+        bool _isEnvironmentDepthSupported;
+        ulong _envDepthProvider;
+        ulong _envDepthSwapchain;
+        int[] _envDepthTextureHandles;     // GL texture handles from swapchain enumeration
+        uint _envDepthWidth, _envDepthHeight;
+        bool _envDepthStarted;
+        // Per-frame acquired data (valid between BeginFrame and EndFrame):
+        bool _envDepthImageAvailable;
+        uint _envDepthSwapchainIndex;       // which texture is current
+        float _envDepthNearZ, _envDepthFarZ;
+        XrEnvironmentDepthImageViewMETA[] _envDepthViews = new XrEnvironmentDepthImageViewMETA[2];
+        // Per-eye depth copy (regular GL_TEXTURE_2D, populated via glCopyImageSubData)
+        int _depthCopy2DTexture = -1;
+        int _depthCopy2DFormat = 0;
+        bool _depthDiagLogged = false;
+        int _currentEyeIndex = 0;
+        // KNI-managed wrapper around _depthCopy2DTexture for normal shader parameter binding
+        Texture2D _depthKNITexture;
+        bool _envDepthAcquireLogged;
+        // Function pointers — XR_META_environment_depth
+        xrCreateEnvironmentDepthProviderMETADelegate _pfnCreateEnvDepthProvider;
+        xrDestroyEnvironmentDepthProviderMETADelegate _pfnDestroyEnvDepthProvider;
+        xrStartEnvironmentDepthProviderMETADelegate _pfnStartEnvDepthProvider;
+        xrStopEnvironmentDepthProviderMETADelegate _pfnStopEnvDepthProvider;
+        xrCreateEnvironmentDepthSwapchainMETADelegate _pfnCreateEnvDepthSwapchain;
+        xrDestroyEnvironmentDepthSwapchainMETADelegate _pfnDestroyEnvDepthSwapchain;
+        xrEnumerateEnvironmentDepthSwapchainImagesMETADelegate _pfnEnumerateEnvDepthSwapchainImages;
+        xrGetEnvironmentDepthSwapchainStateMETADelegate _pfnGetEnvDepthSwapchainState;
+        xrAcquireEnvironmentDepthImageMETADelegate _pfnAcquireEnvDepthImage;
+        xrSetEnvironmentDepthHandRemovalMETADelegate _pfnSetEnvDepthHandRemoval;
 
         bool _useSimpleProfile;
 
@@ -186,14 +207,9 @@ namespace Microsoft.Xna.Platform.XR
             get { return _isTrackFloorLevelEnabled; }
         }
 
-        public override bool IsSceneSupported
+        public override bool IsEnvironmentDepthSupported
         {
-            get { return _isSceneSupported; }
-        }
-
-        public override RoomInfo? RoomInfo
-        {
-            get { return _roomInfo; }
+            get { return _isEnvironmentDepthSupported; }
         }
 
 
@@ -241,7 +257,7 @@ namespace Microsoft.Xna.Platform.XR
                 IList<string> layers = _xrAPI.GetLayers();
                 foreach (string layerName in layers)
                 {
-                    Console.WriteLine("Found layer {0}", layerName);
+                    Trace.WriteLine(string.Format("[KNISB] Found layer {0}", layerName));
                 }
             }
 
@@ -250,7 +266,7 @@ namespace Microsoft.Xna.Platform.XR
             for (int i = 0; i < _extensions.Count; i++)
             {
                 string extensionName = _extensions[i];
-                Console.WriteLine("Extension {0} = {1}", i, extensionName);
+                Trace.WriteLine(string.Format("[KNISB] Extension {0} = {1}", i, extensionName));
             }
 
             this._deviceState = XRDeviceState.Disabled;
@@ -342,6 +358,10 @@ namespace Microsoft.Xna.Platform.XR
             // The better the prediction, the less black will be pulled in at the edges.
             xrResult = _oxrSession.BeginFrame(out FrameBeginInfo beginFrameDesc);
             Debug.Assert(xrResult == Result.Success, "WaitFrame");
+
+            // Acquire environment depth image (needs valid PredictedDisplayTime from WaitFrame)
+            if (_envDepthStarted)
+                AcquireEnvironmentDepthImage();
 
             long time = _frameState.PredictedDisplayTime;
             //double time = _ovrSession.GetPredictedDisplayTime(_frameIndex);
@@ -836,7 +856,11 @@ namespace Microsoft.Xna.Platform.XR
             if (enable == true)
             {
                 if (!_isLocalFloorSupported)
-                    throw new NotImplementedException();
+                {
+                    Trace.WriteLine("[KNISB] TrackFloorLevelAsync: LocalFloor reference space not supported, falling back to FakeStageSpace.");
+                    _isTrackFloorLevelEnabled = false;
+                    return;
+                }
             }
 
             _isTrackFloorLevelEnabled = enable;
@@ -895,11 +919,11 @@ namespace Microsoft.Xna.Platform.XR
             if (this.SessionMode == XRSessionMode.AR)
                 requiredExtensionNames.Add(nameof(OxrExtensions.XR_FB_passthrough));
 
-            // Scene understanding extensions (raw strings — not in nkast.LibOXR's OxrExtensions)
-            requiredExtensionNames.Add("XR_FB_spatial_entity");
-            requiredExtensionNames.Add("XR_FB_spatial_entity_query");
-            requiredExtensionNames.Add("XR_FB_spatial_entity_storage");
-            requiredExtensionNames.Add("XR_FB_scene");
+            // Environment depth extension — only request if available
+            if (_extensions.Contains("XR_META_environment_depth"))
+                requiredExtensionNames.Add("XR_META_environment_depth");
+            else
+                Trace.WriteLine("[KNISB] Optional extension not available: XR_META_environment_depth");
 
             // Check the list of required extensions against what is supported by the runtime.
             uint numRequiredExtensions = (uint)requiredExtensionNames.Count;
@@ -907,11 +931,11 @@ namespace Microsoft.Xna.Platform.XR
             {
                 if (_extensions.Contains(requiredExtensionNames[i]))
                 {
-                    Console.WriteLine("Found required extension {0}", requiredExtensionNames[i]);
+                    Trace.WriteLine(string.Format("[KNISB] Found required extension {0}", requiredExtensionNames[i]));
                 }
                 else
                 {
-                    Console.WriteLine("Failed to find required extension {0}", requiredExtensionNames[i]);
+                    Trace.WriteLine(string.Format("[KNISB] Failed to find required extension {0}", requiredExtensionNames[i]));
                     //throw new Exception();
                 }
             }
@@ -922,7 +946,7 @@ namespace Microsoft.Xna.Platform.XR
                                              requiredExtensionNames, out _oxrInstance);
             if (xrResult != Result.Success)
             {
-                Console.WriteLine("Failed to create XR instance: {0}.", xrResult);
+                Trace.WriteLine(string.Format("[KNISB] Failed to create XR instance: {0}.", xrResult));
                 return (int)xrResult;
             }
             Console.WriteLine("OpenXR Instance initialized successfully. {0}.", _oxrInstance.Instance.Handle);
@@ -1022,28 +1046,64 @@ namespace Microsoft.Xna.Platform.XR
             xrResult = _oxrInstance.CreateSession(&graphicsBindingAndroidGLES, out _oxrSession);
             if (xrResult != Result.Success)
             {
-                Console.WriteLine("Failed to create XR session: {0}.", xrResult);
+                Trace.WriteLine(string.Format("[KNISB] Failed to create XR session: {0}.", xrResult));
                 return (int)xrResult;
             }
             Console.WriteLine("XR session created successfully.");
 
-            // Load scene extension function pointers
-            _isSceneSupported = _extensions.Contains("XR_FB_scene")
-                             && _extensions.Contains("XR_FB_spatial_entity")
-                             && _extensions.Contains("XR_FB_spatial_entity_query");
-            if (_isSceneSupported)
+            // Load environment depth function pointers
+            _isEnvironmentDepthSupported = _extensions.Contains("XR_META_environment_depth");
+            if (_isEnvironmentDepthSupported)
             {
-                _oxrInstance.GetInstanceProcAddr("xrQuerySpacesFB", out _pfnQuerySpacesFB);
-                _oxrInstance.GetInstanceProcAddr("xrRetrieveSpaceQueryResultsFB", out _pfnRetrieveSpaceQueryResultsFB);
-                _oxrInstance.GetInstanceProcAddr("xrGetSpaceComponentStatusFB", out _pfnGetSpaceComponentStatusFB);
-                _oxrInstance.GetInstanceProcAddr("xrSetSpaceComponentStatusFB", out _pfnSetSpaceComponentStatusFB);
-                _oxrInstance.GetInstanceProcAddr("xrGetSpaceRoomLayoutFB", out _pfnGetSpaceRoomLayoutFB);
-                _oxrInstance.GetInstanceProcAddr("xrGetSpaceBoundingBox3DFB", out _pfnGetSpaceBoundingBox3DFB);
-                Console.WriteLine("Scene extensions loaded successfully.");
+                try { _oxrInstance.GetInstanceProcAddr("xrCreateEnvironmentDepthProviderMETA", out _pfnCreateEnvDepthProvider); }
+                catch (ArgumentNullException) { _pfnCreateEnvDepthProvider = null; }
+                try { _oxrInstance.GetInstanceProcAddr("xrDestroyEnvironmentDepthProviderMETA", out _pfnDestroyEnvDepthProvider); }
+                catch (ArgumentNullException) { _pfnDestroyEnvDepthProvider = null; }
+                try { _oxrInstance.GetInstanceProcAddr("xrStartEnvironmentDepthProviderMETA", out _pfnStartEnvDepthProvider); }
+                catch (ArgumentNullException) { _pfnStartEnvDepthProvider = null; }
+                try { _oxrInstance.GetInstanceProcAddr("xrStopEnvironmentDepthProviderMETA", out _pfnStopEnvDepthProvider); }
+                catch (ArgumentNullException) { _pfnStopEnvDepthProvider = null; }
+                try { _oxrInstance.GetInstanceProcAddr("xrCreateEnvironmentDepthSwapchainMETA", out _pfnCreateEnvDepthSwapchain); }
+                catch (ArgumentNullException) { _pfnCreateEnvDepthSwapchain = null; }
+                try { _oxrInstance.GetInstanceProcAddr("xrDestroyEnvironmentDepthSwapchainMETA", out _pfnDestroyEnvDepthSwapchain); }
+                catch (ArgumentNullException) { _pfnDestroyEnvDepthSwapchain = null; }
+                try { _oxrInstance.GetInstanceProcAddr("xrEnumerateEnvironmentDepthSwapchainImagesMETA", out _pfnEnumerateEnvDepthSwapchainImages); }
+                catch (ArgumentNullException) { _pfnEnumerateEnvDepthSwapchainImages = null; }
+                try { _oxrInstance.GetInstanceProcAddr("xrGetEnvironmentDepthSwapchainStateMETA", out _pfnGetEnvDepthSwapchainState); }
+                catch (ArgumentNullException) { _pfnGetEnvDepthSwapchainState = null; }
+                try { _oxrInstance.GetInstanceProcAddr("xrAcquireEnvironmentDepthImageMETA", out _pfnAcquireEnvDepthImage); }
+                catch (ArgumentNullException) { _pfnAcquireEnvDepthImage = null; }
+                try { _oxrInstance.GetInstanceProcAddr("xrSetEnvironmentDepthHandRemovalMETA", out _pfnSetEnvDepthHandRemoval); }
+                catch (ArgumentNullException) { _pfnSetEnvDepthHandRemoval = null; }
+
+                bool allLoaded = _pfnCreateEnvDepthProvider != null
+                    && _pfnDestroyEnvDepthProvider != null
+                    && _pfnStartEnvDepthProvider != null
+                    && _pfnCreateEnvDepthSwapchain != null
+                    && _pfnDestroyEnvDepthSwapchain != null
+                    && _pfnEnumerateEnvDepthSwapchainImages != null
+                    && _pfnGetEnvDepthSwapchainState != null
+                    && _pfnAcquireEnvDepthImage != null;
+
+                if (allLoaded)
+                {
+                    Trace.WriteLine("[KNISB] Environment depth: all function pointers loaded successfully.");
+                }
+                else
+                {
+                    Trace.WriteLine(string.Format("[KNISB] Environment depth: some function pointers missing. " +
+                        "Create={0} Destroy={1} Start={2} Stop={3} CreateSC={4} DestroySC={5} EnumSC={6} GetState={7} Acquire={8} HandRemoval={9}",
+                        _pfnCreateEnvDepthProvider != null, _pfnDestroyEnvDepthProvider != null,
+                        _pfnStartEnvDepthProvider != null, _pfnStopEnvDepthProvider != null,
+                        _pfnCreateEnvDepthSwapchain != null, _pfnDestroyEnvDepthSwapchain != null,
+                        _pfnEnumerateEnvDepthSwapchainImages != null, _pfnGetEnvDepthSwapchainState != null,
+                        _pfnAcquireEnvDepthImage != null, _pfnSetEnvDepthHandRemoval != null));
+                    _isEnvironmentDepthSupported = false;
+                }
             }
             else
             {
-                Console.WriteLine("Scene extensions not available on this runtime.");
+                Trace.WriteLine("[KNISB] XR_META_environment_depth extension not available on this runtime.");
             }
 
             // App only supports the primary stereo view config.
@@ -1731,13 +1791,117 @@ namespace Microsoft.Xna.Platform.XR
 
         public unsafe delegate Result xrPerfSettingsSetPerformanceLevelEXT(Session xrSession, PerfSettingsDomainEXT perfDomain, PerfSettingsLevelEXT perfLevel);
 
-        // Scene query delegates
-        public unsafe delegate Result xrQuerySpacesFBDelegate(Session session, SpaceQueryInfoBaseHeaderFB* info, ulong* requestId);
-        public unsafe delegate Result xrRetrieveSpaceQueryResultsFBDelegate(Session session, ulong requestId, SpaceQueryResultsFB* results);
-        public unsafe delegate Result xrGetSpaceComponentStatusFBDelegate(Space space, SpaceComponentTypeFB componentType, SpaceComponentStatusFB* status);
-        public unsafe delegate Result xrSetSpaceComponentStatusFBDelegate(Space space, SpaceComponentStatusSetInfoFB* info, ulong* requestId);
-        public unsafe delegate Result xrGetSpaceRoomLayoutFBDelegate(Session session, Space space, RoomLayoutFB* roomLayoutOutput);
-        public unsafe delegate Result xrGetSpaceBoundingBox3DFBDelegate(Session session, Space space, Rect3DfFB* boundingBox3DOutput);
+        // Environment depth delegates (XR_META_environment_depth)
+        public unsafe delegate int xrCreateEnvironmentDepthProviderMETADelegate(ulong session, XrEnvironmentDepthProviderCreateInfoMETA* createInfo, ulong* provider);
+        public unsafe delegate int xrDestroyEnvironmentDepthProviderMETADelegate(ulong provider);
+        public unsafe delegate int xrStartEnvironmentDepthProviderMETADelegate(ulong provider);
+        public unsafe delegate int xrStopEnvironmentDepthProviderMETADelegate(ulong provider);
+        public unsafe delegate int xrCreateEnvironmentDepthSwapchainMETADelegate(ulong provider, XrEnvironmentDepthSwapchainCreateInfoMETA* createInfo, ulong* swapchain);
+        public unsafe delegate int xrDestroyEnvironmentDepthSwapchainMETADelegate(ulong swapchain);
+        public unsafe delegate int xrEnumerateEnvironmentDepthSwapchainImagesMETADelegate(ulong swapchain, uint capacityInput, uint* countOutput, void* images);
+        public unsafe delegate int xrGetEnvironmentDepthSwapchainStateMETADelegate(ulong swapchain, XrEnvironmentDepthSwapchainStateMETA* state);
+        public unsafe delegate int xrAcquireEnvironmentDepthImageMETADelegate(ulong provider, XrEnvironmentDepthImageAcquireInfoMETA* acquireInfo, XrEnvironmentDepthImageMETA* image);
+        public unsafe delegate int xrSetEnvironmentDepthHandRemovalMETADelegate(ulong provider, XrEnvironmentDepthHandRemovalSetInfoMETA* setInfo);
+
+        // StructureType constants for XR_META_environment_depth
+        const int XR_TYPE_ENVIRONMENT_DEPTH_PROVIDER_CREATE_INFO_META = 1000291000;
+        const int XR_TYPE_ENVIRONMENT_DEPTH_SWAPCHAIN_CREATE_INFO_META = 1000291001;
+        const int XR_TYPE_ENVIRONMENT_DEPTH_SWAPCHAIN_STATE_META = 1000291002;
+        const int XR_TYPE_ENVIRONMENT_DEPTH_IMAGE_ACQUIRE_INFO_META = 1000291003;
+        const int XR_TYPE_ENVIRONMENT_DEPTH_IMAGE_VIEW_META = 1000291004;
+        const int XR_TYPE_ENVIRONMENT_DEPTH_IMAGE_META = 1000291005;
+        const int XR_TYPE_ENVIRONMENT_DEPTH_HAND_REMOVAL_SET_INFO_META = 1000291006;
+
+        // GL constants not in Android.Opengl.GLES30
+        const int GL_TEXTURE_2D_ARRAY = 0x8C1A;
+        const int GL_DEPTH_TEST = 0x0B71;
+        const int GL_DEPTH_WRITEMASK = 0x0B72;
+        const int GL_CURRENT_PROGRAM = 0x8B8D;
+        const int GL_BLEND = 0x0BE2;
+        const int GL_VERTEX_ARRAY_BINDING = 0x85B5;
+        const int GL_FRAGMENT_SHADER = 0x8B30;
+        const int GL_VERTEX_SHADER = 0x8B31;
+        const int GL_COMPILE_STATUS = 0x8B81;
+        const int GL_LINK_STATUS = 0x8B82;
+        const int GL_INFO_LOG_LENGTH = 0x8B84;
+        const int GL_COLOR_WRITEMASK = 0x0C23;
+        const int GL_TEXTURE0 = 0x84C0;
+        const int GL_DEPTH_FUNC = 0x0B74;
+        const int GL_ALWAYS = 0x0207;
+        const int GL_LEQUAL = 0x0203;
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct XrEnvironmentDepthProviderCreateInfoMETA
+        {
+            public int Type;
+            public unsafe void* Next;
+            public uint CreateFlags;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct XrEnvironmentDepthSwapchainCreateInfoMETA
+        {
+            public int Type;
+            public unsafe void* Next;
+            public uint CreateFlags;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct XrEnvironmentDepthSwapchainStateMETA
+        {
+            public int Type;
+            public unsafe void* Next;
+            public uint Width;
+            public uint Height;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct XrEnvironmentDepthImageAcquireInfoMETA
+        {
+            public int Type;
+            public unsafe void* Next;
+            public ulong Space;   // XrSpace
+            public long DisplayTime;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct XrFovf
+        {
+            public float AngleLeft;
+            public float AngleRight;
+            public float AngleUp;
+            public float AngleDown;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct XrEnvironmentDepthImageViewMETA
+        {
+            public int Type;
+            public unsafe void* Next;
+            public XrFovf Fov;
+            public Posef Pose;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public unsafe struct XrEnvironmentDepthImageMETA
+        {
+            public int Type;
+            public void* Next;
+            public uint SwapchainIndex;
+            public float NearZ;
+            public float FarZ;
+            public XrEnvironmentDepthImageViewMETA Views0;
+            public XrEnvironmentDepthImageViewMETA Views1;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct XrEnvironmentDepthHandRemovalSetInfoMETA
+        {
+            public int Type;
+            public unsafe void* Next;
+            public int Enabled; // XrBool32
+        }
+
 
         const int ovrMaxLayerCount = 16;
         const int ovrMaxNumEyes = 2;
@@ -2311,165 +2475,414 @@ namespace Microsoft.Xna.Platform.XR
             return;
         }
 
-        public override unsafe void QueryRoomInfoAsync()
+        /// <summary>
+        /// Creates the environment depth provider, swapchain, enumerates images,
+        /// compiles the GLSL depth pre-pass shader, and starts the provider.
+        /// </summary>
+        public override unsafe void BeginEnvironmentDepth()
         {
-            if (!_isSceneSupported)
+            if (!_isEnvironmentDepthSupported)
             {
-                Console.WriteLine("QueryRoomInfoAsync: Scene not supported.");
+                Trace.WriteLine("[ENVDEPTH] BeginEnvironmentDepth: Not supported.");
                 return;
             }
-            if (_sceneQueryPending)
+            if (_envDepthStarted)
+                return;
+
+            // 1. Create provider
+            XrEnvironmentDepthProviderCreateInfoMETA createInfo = default;
+            createInfo.Type = XR_TYPE_ENVIRONMENT_DEPTH_PROVIDER_CREATE_INFO_META;
+            createInfo.CreateFlags = 0;
+
+            ulong provider = 0;
+            int xr = _pfnCreateEnvDepthProvider(_oxrSession.Session.Handle, &createInfo, &provider);
+            if (xr != 0)
             {
-                Console.WriteLine("QueryRoomInfoAsync: Query already pending.");
+                Trace.WriteLine(string.Format("[ENVDEPTH] xrCreateEnvironmentDepthProviderMETA failed: {0}", xr));
+                return;
+            }
+            _envDepthProvider = provider;
+
+            // 2. Create swapchain
+            XrEnvironmentDepthSwapchainCreateInfoMETA scCreateInfo = default;
+            scCreateInfo.Type = XR_TYPE_ENVIRONMENT_DEPTH_SWAPCHAIN_CREATE_INFO_META;
+            scCreateInfo.CreateFlags = 0;
+
+            ulong swapchain = 0;
+            xr = _pfnCreateEnvDepthSwapchain(provider, &scCreateInfo, &swapchain);
+            if (xr != 0)
+            {
+                Trace.WriteLine(string.Format("[ENVDEPTH] xrCreateEnvironmentDepthSwapchainMETA failed: {0}", xr));
+                return;
+            }
+            _envDepthSwapchain = swapchain;
+
+            // 3. Get swapchain dimensions
+            XrEnvironmentDepthSwapchainStateMETA state = default;
+            state.Type = XR_TYPE_ENVIRONMENT_DEPTH_SWAPCHAIN_STATE_META;
+            xr = _pfnGetEnvDepthSwapchainState(swapchain, &state);
+            if (xr != 0)
+            {
+                Trace.WriteLine(string.Format("[ENVDEPTH] xrGetEnvironmentDepthSwapchainStateMETA failed: {0}", xr));
+                return;
+            }
+            _envDepthWidth = state.Width;
+            _envDepthHeight = state.Height;
+
+            // 4. Enumerate swapchain images (two-call idiom)
+            uint imageCount = 0;
+            xr = _pfnEnumerateEnvDepthSwapchainImages(swapchain, 0, &imageCount, null);
+            if (xr != 0 || imageCount == 0)
+            {
+                Trace.WriteLine(string.Format("[ENVDEPTH] Enumerate images failed: xr={0} count={1}", xr, imageCount));
+                return;
+            }
+            Trace.WriteLine(string.Format("[ENVDEPTH] Count query OK: {0} images", imageCount));
+            int structSize = sizeof(SwapchainImageOpenGLESKHR);
+            Trace.WriteLine(string.Format("[ENVDEPTH] sizeof(SwapchainImageOpenGLESKHR) = {0}", structSize));
+
+            SwapchainImageOpenGLESKHR[] images = new SwapchainImageOpenGLESKHR[(int)imageCount];
+            for (int i = 0; i < (int)imageCount; i++)
+            {
+                images[i].Type = StructureType.SwapchainImageOpenglESKhr;
+                images[i].Next = null;
+                Trace.WriteLine(string.Format("[ENVDEPTH] images[{0}].Type={1}", i, (int)images[i].Type));
+            }
+            Trace.WriteLine("[ENVDEPTH] About to call enumerate fill...");
+            fixed (SwapchainImageOpenGLESKHR* pImages = images)
+            {
+                Trace.WriteLine(string.Format("[ENVDEPTH] pImages=0x{0:X}, imageCount={1}", (long)pImages, imageCount));
+                xr = _pfnEnumerateEnvDepthSwapchainImages(swapchain, imageCount, &imageCount, pImages);
+            }
+            Trace.WriteLine(string.Format("[ENVDEPTH] Enumerate fill result: {0}", xr));
+            if (xr != 0)
+            {
+                Trace.WriteLine(string.Format("[ENVDEPTH] Enumerate images (fill) failed: {0}", xr));
                 return;
             }
 
-            // Query for entities with RoomLayout component
-            SpaceComponentFilterInfoFB componentFilter = default;
-            componentFilter.Type = StructureType.SpaceComponentFilterInfoFB;
-            componentFilter.Next = null;
-            componentFilter.ComponentType = SpaceComponentTypeFB.RoomLayoutFB;
-
-            SpaceQueryInfoFB queryInfo = default;
-            queryInfo.Type = StructureType.SpaceQueryInfoFB;
-            queryInfo.Next = null;
-            queryInfo.QueryAction = SpaceQueryActionFB.LoadFB;
-            queryInfo.MaxResultCount = 50;
-            queryInfo.Timeout = long.MaxValue; // XR_INFINITE_DURATION
-            queryInfo.Filter = (SpaceFilterInfoBaseHeaderFB*)(&componentFilter);
-            queryInfo.ExcludeFilter = null;
-
-            ulong requestId = 0;
-            Result xrResult = _pfnQuerySpacesFB(_oxrSession.Session,
-                (SpaceQueryInfoBaseHeaderFB*)(&queryInfo), &requestId);
-
-            if (xrResult == Result.Success)
+            _envDepthTextureHandles = new int[(int)imageCount];
+            for (int i = 0; i < (int)imageCount; i++)
             {
-                _sceneQueryRequestId = requestId;
-                _sceneQueryPending = true;
-                Console.WriteLine("QueryRoomInfoAsync: Query submitted, requestId={0}", requestId);
+                _envDepthTextureHandles[i] = (int)images[i].Image;
             }
-            else
+
+            Trace.WriteLine(string.Format("[ENVDEPTH] Provider created, swapchain {0}x{1}, {2} images",
+                _envDepthWidth, _envDepthHeight, imageCount));
+
+            // 5. Verify texture format and set texture parameters
+            Android.Opengl.GLES30.GlBindTexture(GL_TEXTURE_2D_ARRAY, _envDepthTextureHandles[0]);
+            int[] fmt = new int[1], tw = new int[1], th = new int[1];
+            Android.Opengl.GLES31.GlGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, 0x1003 /*GL_TEXTURE_INTERNAL_FORMAT*/, fmt, 0);
+            Android.Opengl.GLES31.GlGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, 0x1000 /*GL_TEXTURE_WIDTH*/, tw, 0);
+            Android.Opengl.GLES31.GlGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, 0x1001 /*GL_TEXTURE_HEIGHT*/, th, 0);
+            Trace.WriteLine(string.Format("[ENVDEPTH] Texture format=0x{0:X4} size={1}x{2}", fmt[0], tw[0], th[0]));
+
+            // Set texture parameters on all swapchain textures
+            for (int i = 0; i < (int)imageCount; i++)
             {
-                Console.WriteLine("QueryRoomInfoAsync: QuerySpacesFB failed: {0}", xrResult);
+                Android.Opengl.GLES30.GlBindTexture(GL_TEXTURE_2D_ARRAY, _envDepthTextureHandles[i]);
+                Android.Opengl.GLES30.GlTexParameteri(GL_TEXTURE_2D_ARRAY, 0x2801 /*GL_TEXTURE_MIN_FILTER*/, 0x2600 /*GL_NEAREST*/);
+                Android.Opengl.GLES30.GlTexParameteri(GL_TEXTURE_2D_ARRAY, 0x2800 /*GL_TEXTURE_MAG_FILTER*/, 0x2600 /*GL_NEAREST*/);
+                Android.Opengl.GLES30.GlTexParameteri(GL_TEXTURE_2D_ARRAY, 0x2802 /*GL_TEXTURE_WRAP_S*/, 0x812F /*GL_CLAMP_TO_EDGE*/);
+                Android.Opengl.GLES30.GlTexParameteri(GL_TEXTURE_2D_ARRAY, 0x2803 /*GL_TEXTURE_WRAP_T*/, 0x812F /*GL_CLAMP_TO_EDGE*/);
+                Android.Opengl.GLES30.GlTexParameteri(GL_TEXTURE_2D_ARRAY, 0x884C /*GL_TEXTURE_COMPARE_MODE*/, 0 /*GL_NONE*/);
+            }
+            Android.Opengl.GLES30.GlBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+
+            // 6. Start the provider
+            xr = _pfnStartEnvDepthProvider(provider);
+            if (xr != 0)
+            {
+                Trace.WriteLine(string.Format("[ENVDEPTH] xrStartEnvironmentDepthProviderMETA failed: {0}", xr));
+                return;
+            }
+            Trace.WriteLine("[ENVDEPTH] Build: v47");
+            Trace.WriteLine("[ENVDEPTH] Started depth provider");
+
+            // 7. Optional: enable hand removal
+            if (_pfnSetEnvDepthHandRemoval != null)
+            {
+                XrEnvironmentDepthHandRemovalSetInfoMETA handRemoval = default;
+                handRemoval.Type = XR_TYPE_ENVIRONMENT_DEPTH_HAND_REMOVAL_SET_INFO_META;
+                handRemoval.Enabled = 1; // true
+                int hrResult = _pfnSetEnvDepthHandRemoval(provider, &handRemoval);
+                Trace.WriteLine(string.Format("[ENVDEPTH] Hand removal set: {0}", hrResult));
+            }
+
+            _envDepthStarted = true;
+        }
+
+        /// <summary>
+        /// Acquires the current environment depth image. Called each frame in BeginFrame.
+        /// </summary>
+        private unsafe void AcquireEnvironmentDepthImage()
+        {
+            _envDepthImageAvailable = false;
+            if (!_envDepthStarted || _envDepthProvider == 0)
+                return;
+
+            XrEnvironmentDepthImageAcquireInfoMETA acquireInfo = default;
+            acquireInfo.Type = XR_TYPE_ENVIRONMENT_DEPTH_IMAGE_ACQUIRE_INFO_META;
+            acquireInfo.Space = _LocalSpace.Space.Handle;
+            acquireInfo.DisplayTime = _frameState.PredictedDisplayTime;
+
+            XrEnvironmentDepthImageMETA depthImage = default;
+            depthImage.Type = XR_TYPE_ENVIRONMENT_DEPTH_IMAGE_META;
+            depthImage.Views0.Type = XR_TYPE_ENVIRONMENT_DEPTH_IMAGE_VIEW_META;
+            depthImage.Views1.Type = XR_TYPE_ENVIRONMENT_DEPTH_IMAGE_VIEW_META;
+
+            int xr = _pfnAcquireEnvDepthImage(_envDepthProvider, &acquireInfo, &depthImage);
+
+            if (xr != 0)
+            {
+                if (!_envDepthAcquireLogged)
+                {
+                    _envDepthAcquireLogged = true;
+                    Trace.WriteLine(string.Format("[ENVDEPTH] Acquire error: xr={0}", xr));
+                }
+                return;
+            }
+
+            _envDepthImageAvailable = true;
+            _envDepthSwapchainIndex = depthImage.SwapchainIndex;
+            _envDepthNearZ = depthImage.NearZ;
+            _envDepthFarZ = depthImage.FarZ;
+            _envDepthViews[0] = depthImage.Views0;
+            _envDepthViews[1] = depthImage.Views1;
+
+            if (!_envDepthAcquireLogged)
+            {
+                _envDepthAcquireLogged = true;
+                Trace.WriteLine(string.Format("[ENVDEPTH] Depth image acquired: swapIdx={0} nearZ={1:F4} farZ={2:F4} texHandle={3}",
+                    _envDepthSwapchainIndex, _envDepthNearZ, _envDepthFarZ,
+                    _envDepthTextureHandles != null && _envDepthSwapchainIndex < _envDepthTextureHandles.Length
+                        ? _envDepthTextureHandles[_envDepthSwapchainIndex] : -1));
             }
         }
 
-        private unsafe void ProcessSceneQueryResults()
+        /// <summary>
+        /// Returns true when environment depth data is available this frame.
+        /// </summary>
+        public override bool IsEnvironmentDepthAvailable
         {
-            // Two-call idiom: first get count
-            SpaceQueryResultsFB results = default;
-            results.Type = StructureType.SpaceQueryResultsFB;
-            results.Next = null;
-            results.ResultCapacityInput = 0;
-            results.ResultCountOutput = 0;
-            results.Results = null;
+            get { return _envDepthImageAvailable && _envDepthTextureHandles != null; }
+        }
 
-            Result xrResult = _pfnRetrieveSpaceQueryResultsFB(_oxrSession.Session, _sceneQueryRequestId, &results);
-            if (xrResult != Result.Success)
+        public override float EnvironmentDepthNearZ
+        {
+            get { return _envDepthNearZ; }
+        }
+
+        /// <summary>
+        /// Computes the depth camera ViewProjection for one eye.
+        /// Includes InverseCameraWorldMatrix to convert from app units to XR tracking space.
+        /// </summary>
+        public override Matrix GetDepthViewProjection(int eyeIndex, Matrix cameraWorldMatrix)
+        {
+            _currentEyeIndex = eyeIndex;
+
+            // v46 FIX: Use full invCWM (including rotation) but with app-unit projection.
+            //
+            // v44 bug: invCWM * Scale(1/90) * depthView * depthProj(nearZ=0.1)
+            //   The Scale(1/90) made depthView's translation (~1.6m head height)
+            //   significant in the scaled coordinate space. When invCWM's rotation
+            //   mapped Y to another axis, the 1.6m offset shifted depth UVs onto
+            //   the wrong part of the depth texture → sphere vanished at certain angles.
+            //
+            // v45 bug: removed invCWM rotation entirely → broke UV mapping.
+            //
+            // v46 fix: invCWM * depthView * depthProj(nearZ_appUnits)
+            //   No explicit scale factor. Instead, project with nearZ in app units:
+            //   nearZ_app = nearZ_metres * 90.  The depth comparison still works:
+            //     fragDepth = 1 - nearZ_app / Z_app
+            //               = 1 - (nearZ_m * 90) / (Z_m * 90)
+            //               = 1 - nearZ_m / Z_m = envDepth  ✓
+            //   UV mapping is correct because M11,M22 depend only on FOV (not nearZ),
+            //   and invCWM's rotation matches the rendering's screen positions.
+            //   depthView's 1.6m translation is negligible vs ~300 app-unit coordinates.
+            Matrix invCWM = Matrix.Invert(cameraWorldMatrix);
+            Matrix depthView = CreateViewFromPose(_envDepthViews[eyeIndex].Pose);
+            float nearZAppUnits = _envDepthNearZ * 90f;
+            Matrix depthProj = CreateProjectionFromFov(_envDepthViews[eyeIndex].Fov, nearZAppUnits, _envDepthFarZ);
+
+            // Diagnostic: compare depth pose/FoV vs eye pose/FoV (log once per eye)
+            if (!_depthDiagLogged && eyeIndex == 1)
             {
-                Console.WriteLine("ProcessSceneQueryResults: RetrieveSpaceQueryResultsFB (count) failed: {0}", xrResult);
+                _depthDiagLogged = true;
+                var dp = _envDepthViews[0].Pose;
+                var df = _envDepthViews[0].Fov;
+                var ep = _projections[0].Pose;
+                var ef = _projections[0].Fov;
+                Trace.WriteLine(string.Format(
+                    "[ENVDEPTH-DIAG] EYE0 pose=({0:F4},{1:F4},{2:F4}) ori=({3:F4},{4:F4},{5:F4},{6:F4}) fov=L{7:F3} R{8:F3} U{9:F3} D{10:F3}",
+                    ep.Position.X, ep.Position.Y, ep.Position.Z,
+                    ep.Orientation.X, ep.Orientation.Y, ep.Orientation.Z, ep.Orientation.W,
+                    ef.AngleLeft, ef.AngleRight, ef.AngleUp, ef.AngleDown));
+                Trace.WriteLine(string.Format(
+                    "[ENVDEPTH-DIAG] DEP0 pose=({0:F4},{1:F4},{2:F4}) ori=({3:F4},{4:F4},{5:F4},{6:F4}) fov=L{7:F3} R{8:F3} U{9:F3} D{10:F3}",
+                    dp.Position.X, dp.Position.Y, dp.Position.Z,
+                    dp.Orientation.X, dp.Orientation.Y, dp.Orientation.Z, dp.Orientation.W,
+                    df.AngleLeft, df.AngleRight, df.AngleUp, df.AngleDown));
+            }
+
+            return invCWM * depthView * depthProj;
+        }
+
+        /// <summary>
+        /// Copies the current eye's layer of the depth texture array into a regular GL_TEXTURE_2D
+        /// (via glCopyImageSubData, GLES 3.2) and binds it to the specified GL texture unit.
+        /// The eye index is cached from the preceding GetDepthViewProjection call.
+        /// </summary>
+        public override void BindDepthTextureToUnit(int unit)
+        {
+            if (_envDepthTextureHandles == null || _envDepthSwapchainIndex >= _envDepthTextureHandles.Length)
                 return;
+
+            int srcTexture = _envDepthTextureHandles[_envDepthSwapchainIndex];
+
+            // First use: read internal format from the array texture and allocate the 2D copy texture.
+            if (_depthCopy2DTexture < 0)
+            {
+                Android.Opengl.GLES30.GlBindTexture(GL_TEXTURE_2D_ARRAY, srcTexture);
+                int[] fmt = new int[1];
+                Android.Opengl.GLES31.GlGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, 0x1003 /*GL_TEXTURE_INTERNAL_FORMAT*/, fmt, 0);
+                _depthCopy2DFormat = fmt[0];
+
+                int[] textures = new int[1];
+                Android.Opengl.GLES30.GlGenTextures(1, textures, 0);
+                _depthCopy2DTexture = textures[0];
+                Android.Opengl.GLES30.GlBindTexture(0x0DE1 /*GL_TEXTURE_2D*/, _depthCopy2DTexture);
+                Android.Opengl.GLES30.GlTexStorage2D(0x0DE1 /*GL_TEXTURE_2D*/, 1, _depthCopy2DFormat, (int)_envDepthWidth, (int)_envDepthHeight);
+                Android.Opengl.GLES30.GlTexParameteri(0x0DE1 /*GL_TEXTURE_2D*/, 0x2801 /*GL_TEXTURE_MIN_FILTER*/, 0x2600 /*GL_NEAREST*/);
+                Android.Opengl.GLES30.GlTexParameteri(0x0DE1 /*GL_TEXTURE_2D*/, 0x2800 /*GL_TEXTURE_MAG_FILTER*/, 0x2600 /*GL_NEAREST*/);
+                Android.Opengl.GLES30.GlTexParameteri(0x0DE1 /*GL_TEXTURE_2D*/, 0x2802 /*GL_TEXTURE_WRAP_S*/, 0x812F /*GL_CLAMP_TO_EDGE*/);
+                Android.Opengl.GLES30.GlTexParameteri(0x0DE1 /*GL_TEXTURE_2D*/, 0x2803 /*GL_TEXTURE_WRAP_T*/, 0x812F /*GL_CLAMP_TO_EDGE*/);
+                Android.Opengl.GLES30.GlTexParameteri(0x0DE1 /*GL_TEXTURE_2D*/, 0x884C /*GL_TEXTURE_COMPARE_MODE*/, 0 /*GL_NONE*/);
+                Trace.WriteLine(string.Format("[ENVDEPTH] copy2D tex={0} fmt=0x{1:X4} size={2}x{3}", _depthCopy2DTexture, _depthCopy2DFormat, _envDepthWidth, _envDepthHeight));
+
+                // Create a KNI Texture2D wrapper around the raw GL depth texture.
+                // This allows shaders to bind the depth texture via normal SetValue()
+                // instead of raw GL calls + ClearDirty workarounds.
+                GraphicsDevice gd = _graphics.GraphicsDevice;
+                _depthKNITexture = new Texture2D(gd, (int)_envDepthWidth, (int)_envDepthHeight);
+                var ct = ((IPlatformTexture)_depthKNITexture).GetTextureStrategy<ConcreteTexture>();
+                // Delete the auto-allocated GL texture and replace with our depth copy
+                int[] texToDelete = new int[] { ct._glTexture };
+                Android.Opengl.GLES30.GlDeleteTextures(1, texToDelete, 0);
+                ct._glTexture = _depthCopy2DTexture;
+                Trace.WriteLine(string.Format("[ENVDEPTH] KNI wrapper created, glTexture={0}", _depthCopy2DTexture));
             }
 
-            uint count = results.ResultCountOutput;
-            Console.WriteLine("ProcessSceneQueryResults: Found {0} room entities", count);
+            // Copy the current eye's layer from the array texture into the 2D texture.
+            Android.Opengl.GLES32.GlCopyImageSubData(
+                srcTexture, GL_TEXTURE_2D_ARRAY, 0, 0, 0, _currentEyeIndex,
+                _depthCopy2DTexture, 0x0DE1 /*GL_TEXTURE_2D*/, 0, 0, 0, 0,
+                (int)_envDepthWidth, (int)_envDepthHeight, 1);
+            int err = Android.Opengl.GLES30.GlGetError();
+            if (err != 0)
+                Trace.WriteLine(string.Format("[ENVDEPTH] glCopyImageSubData err=0x{0:X} eye={1}", err, _currentEyeIndex));
 
-            if (count == 0)
-            {
-                Console.WriteLine("ProcessSceneQueryResults: No room entities found. Has Space Setup been completed?");
+            // Targeted bind: MGFX assigns DepthSampler (ps_s8) to GL unit N based on sorted
+            // declaration order, NOT the register number. Bind only the exact requested unit.
+            // Initial setup (XNAGame.cs) calls this for units 0-3 to cover all shaders.
+            Android.Opengl.GLES30.GlActiveTexture(GL_TEXTURE0 + unit);
+            Android.Opengl.GLES30.GlBindTexture(0x0DE1 /*GL_TEXTURE_2D*/, _depthCopy2DTexture);
+        }
+
+        /// <summary>
+        /// Binds the already-copied depth texture to the specified GL unit WITHOUT re-copying.
+        /// Use this for per-draw rebinds after Apply() to avoid re-copying from a potentially stale swapchain.
+        /// </summary>
+        public override void BindDepthTextureOnly(int unit)
+        {
+            if (_depthCopy2DTexture < 0)
                 return;
-            }
+            Android.Opengl.GLES30.GlActiveTexture(GL_TEXTURE0 + unit);
+            Android.Opengl.GLES30.GlBindTexture(0x0DE1 /*GL_TEXTURE_2D*/, _depthCopy2DTexture);
+        }
 
-            // Second call: fill array
-            SpaceQueryResultFB* resultArray = stackalloc SpaceQueryResultFB[(int)count];
-            results.ResultCapacityInput = count;
-            results.ResultCountOutput = 0;
-            results.Results = resultArray;
+        /// <summary>
+        /// Returns the environment depth as a KNI-managed Texture2D.
+        /// Shaders can bind this via normal SetValue() — no raw GL rebind or ClearDirty needed.
+        /// </summary>
+        public override Texture2D EnvironmentDepthTexture => _depthKNITexture;
 
-            xrResult = _pfnRetrieveSpaceQueryResultsFB(_oxrSession.Session, _sceneQueryRequestId, &results);
-            if (xrResult != Result.Success)
+        /// <summary>
+        /// Creates a view matrix from an XR pose (inverse of the pose transform).
+        /// </summary>
+        private static Matrix CreateViewFromPose(Posef pose)
+        {
+            Quaternion q = new Quaternion(pose.Orientation.X, pose.Orientation.Y, pose.Orientation.Z, pose.Orientation.W);
+            Vector3 pos = new Vector3(pose.Position.X, pose.Position.Y, pose.Position.Z);
+            Matrix rot = Matrix.CreateFromQuaternion(q);
+            Matrix trans = Matrix.CreateTranslation(pos);
+            Matrix world = rot * trans;
+            return Matrix.Invert(world);
+        }
+
+        /// <summary>
+        /// Creates a projection matrix from XR FoV angles using the same GLES convention as the eye projection.
+        /// </summary>
+        private static Matrix CreateProjectionFromFov(XrFovf fov, float nearZ, float farZ)
+        {
+            float tanLeft = (float)Math.Tan(fov.AngleLeft);
+            float tanRight = (float)Math.Tan(fov.AngleRight);
+            float tanUp = (float)Math.Tan(fov.AngleUp);
+            float tanDown = (float)Math.Tan(fov.AngleDown);
+
+            float tanAngleWidth = tanRight - tanLeft;
+            float tanAngleHeight = tanUp - tanDown; // +Y up for GLES
+
+            float offsetZ = nearZ; // [-1,1] Z clip space for GLES
+
+            Matrix result;
+            result.M11 = 2.0f / tanAngleWidth;
+            result.M12 = 0.0f;
+            result.M13 = 0.0f;
+            result.M14 = 0.0f;
+
+            result.M21 = 0.0f;
+            result.M22 = 2.0f / tanAngleHeight;
+            result.M23 = 0.0f;
+            result.M24 = 0.0f;
+
+            result.M31 = (tanRight + tanLeft) / tanAngleWidth;
+            result.M32 = (tanUp + tanDown) / tanAngleHeight;
+            result.M34 = -1.0f;
+
+            result.M41 = 0.0f;
+            result.M42 = 0.0f;
+            result.M44 = 0.0f;
+
+            if (float.IsInfinity(farZ))
             {
-                Console.WriteLine("ProcessSceneQueryResults: RetrieveSpaceQueryResultsFB (fill) failed: {0}", xrResult);
-                return;
+                // Infinite far plane projection
+                result.M33 = -1.0f;
+                result.M43 = -2.0f * nearZ;
             }
-
-            // Process each room entity
-            for (uint i = 0; i < results.ResultCountOutput; i++)
+            else
             {
-                Space space = resultArray[i].Space;
-                UuidEXT uuid = resultArray[i].Uuid;
-                Console.WriteLine("ProcessSceneQueryResults: Room entity {0}, UUID bytes: {1:X2}{2:X2}{3:X2}{4:X2}...",
-                    i, uuid.Data[0], uuid.Data[1], uuid.Data[2], uuid.Data[3]);
-
-                // Get room layout (two-call idiom for wall UUIDs)
-                RoomLayoutFB roomLayout = default;
-                roomLayout.Type = StructureType.RoomLayoutFB;
-                roomLayout.Next = null;
-                roomLayout.WallUuidCapacityInput = 0;
-                roomLayout.WallUuids = null;
-
-                xrResult = _pfnGetSpaceRoomLayoutFB(_oxrSession.Session, space, &roomLayout);
-                if (xrResult != Result.Success)
-                {
-                    Console.WriteLine("ProcessSceneQueryResults: GetSpaceRoomLayoutFB (count) failed: {0}", xrResult);
-                    continue;
-                }
-
-                uint wallCount = roomLayout.WallUuidCountOutput;
-                Console.WriteLine("ProcessSceneQueryResults: Room has {0} walls", wallCount);
-
-                // Second call with wall UUIDs allocated
-                UuidEXT* wallUuids = stackalloc UuidEXT[(int)wallCount];
-                roomLayout.WallUuidCapacityInput = wallCount;
-                roomLayout.WallUuids = wallUuids;
-
-                xrResult = _pfnGetSpaceRoomLayoutFB(_oxrSession.Session, space, &roomLayout);
-                if (xrResult != Result.Success)
-                {
-                    Console.WriteLine("ProcessSceneQueryResults: GetSpaceRoomLayoutFB (fill) failed: {0}", xrResult);
-                    continue;
-                }
-
-                Console.WriteLine("ProcessSceneQueryResults: Floor UUID: {0:X2}{1:X2}..., Ceiling UUID: {2:X2}{3:X2}...",
-                    roomLayout.FloorUuid.Data[0], roomLayout.FloorUuid.Data[1],
-                    roomLayout.CeilingUuid.Data[0], roomLayout.CeilingUuid.Data[1]);
-
-                // Try to get 3D bounding box of the room entity itself
-                Rect3DfFB bbox3d = default;
-                xrResult = _pfnGetSpaceBoundingBox3DFB(_oxrSession.Session, space, &bbox3d);
-                if (xrResult == Result.Success)
-                {
-                    Console.WriteLine("ProcessSceneQueryResults: Room 3D BBox - Offset=({0:F3}, {1:F3}, {2:F3}) Extent=({3:F3}w x {4:F3}h x {5:F3}d) meters",
-                        bbox3d.Offset.X, bbox3d.Offset.Y, bbox3d.Offset.Z,
-                        bbox3d.Extent.Width, bbox3d.Extent.Height, bbox3d.Extent.Depth);
-
-                    _roomInfo = new RoomInfo
-                    {
-                        Width = bbox3d.Extent.Width,
-                        Height = bbox3d.Extent.Height,
-                        Depth = bbox3d.Extent.Depth,
-                        WallCount = (int)wallCount,
-                        IsValid = true
-                    };
-
-                    Console.WriteLine("ProcessSceneQueryResults: RoomInfo set - {0:F2}m x {1:F2}m x {2:F2}m, {3} walls",
-                        _roomInfo.Value.Width, _roomInfo.Value.Depth, _roomInfo.Value.Height, _roomInfo.Value.WallCount);
-                }
-                else
-                {
-                    Console.WriteLine("ProcessSceneQueryResults: GetSpaceBoundingBox3DFB failed: {0}. Room entity may not have Bounded3D component.", xrResult);
-                    // Still populate with wall count even without bounding box
-                    _roomInfo = new RoomInfo
-                    {
-                        WallCount = (int)wallCount,
-                        IsValid = false
-                    };
-                }
-
-                // Use the first room entity found
-                break;
+                result.M33 = (farZ + offsetZ) / (nearZ - farZ);
+                result.M43 = (farZ * (nearZ + offsetZ)) / (nearZ - farZ);
             }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Converts a Matrix to a column-major float[16] array for use with glUniformMatrix4fv.
+        /// MonoGame/KNI uses row-major storage, but GLSL expects column-major by default.
+        /// </summary>
+        private static float[] MatrixToFloatArray(Matrix m)
+        {
+            return new float[]
+            {
+                m.M11, m.M21, m.M31, m.M41,
+                m.M12, m.M22, m.M32, m.M42,
+                m.M13, m.M23, m.M33, m.M43,
+                m.M14, m.M24, m.M34, m.M44
+            };
         }
 
         private unsafe void ovrApp_HandleXrEvents()
@@ -2583,38 +2996,6 @@ namespace Microsoft.Xna.Platform.XR
                                 default:
                                     Console.WriteLine("Unknown State: {0}.", session_state_changed_event->State);
                                     break;
-                            }
-                        }
-                        break;
-
-                    case StructureType.EventDataSpaceQueryResultsAvailableFB:
-                        {
-                            EventDataSpaceQueryResultsAvailableFB* queryResultsEvent =
-                                (EventDataSpaceQueryResultsAvailableFB*)(baseEventHeader);
-                            Console.WriteLine(
-                                "xrPollEvent: received XR_TYPE_EVENT_DATA_SPACE_QUERY_RESULTS_AVAILABLE_FB: requestId={0}",
-                                queryResultsEvent->RequestId);
-
-                            if (_sceneQueryPending && queryResultsEvent->RequestId == _sceneQueryRequestId)
-                            {
-                                ProcessSceneQueryResults();
-                            }
-                        }
-                        break;
-
-                    case StructureType.EventDataSpaceQueryCompleteFB:
-                        {
-                            EventDataSpaceQueryCompleteFB* queryCompleteEvent =
-                                (EventDataSpaceQueryCompleteFB*)(baseEventHeader);
-                            Console.WriteLine(
-                                "xrPollEvent: received XR_TYPE_EVENT_DATA_SPACE_QUERY_COMPLETE_FB: requestId={0} result={1}",
-                                queryCompleteEvent->RequestId,
-                                queryCompleteEvent->Result);
-
-                            if (_sceneQueryPending && queryCompleteEvent->RequestId == _sceneQueryRequestId)
-                            {
-                                _sceneQueryPending = false;
-                                Console.WriteLine("Scene query completed. RoomInfo valid: {0}", _roomInfo.HasValue && _roomInfo.Value.IsValid);
                             }
                         }
                         break;
@@ -2867,6 +3248,17 @@ namespace Microsoft.Xna.Platform.XR
         {
             if (disposing)
             {
+                // Clean up environment depth resources
+                if (_envDepthProvider != 0)
+                {
+                    if (_pfnStopEnvDepthProvider != null)
+                        _pfnStopEnvDepthProvider(_envDepthProvider);
+                    if (_envDepthSwapchain != 0 && _pfnDestroyEnvDepthSwapchain != null)
+                        _pfnDestroyEnvDepthSwapchain(_envDepthSwapchain);
+                    if (_pfnDestroyEnvDepthProvider != null)
+                        _pfnDestroyEnvDepthProvider(_envDepthProvider);
+                }
+
                 if (_passthroughFB != null)
                     _passthroughFB.Dispose();
                 if (_passthroughLayerFB != null)

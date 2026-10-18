@@ -44,9 +44,14 @@ namespace Microsoft.Xna.Platform.XR
         public abstract HandJointCollectionStrategy CreateHandJointCollectionStrategy(int handIndex);
         public abstract HandJointCollection GetHandJoints(int handIndex);
 
-        public abstract bool IsSceneSupported { get; }
-        public abstract RoomInfo? RoomInfo { get; }
-        public abstract void QueryRoomInfoAsync();
+        public abstract bool IsEnvironmentDepthSupported { get; }
+        public abstract void BeginEnvironmentDepth();
+        public abstract bool IsEnvironmentDepthAvailable { get; }
+        public abstract float EnvironmentDepthNearZ { get; }
+        public abstract Matrix GetDepthViewProjection(int eyeIndex, Matrix cameraWorldMatrix);
+        public abstract void BindDepthTextureToUnit(int unit);
+        public abstract void BindDepthTextureOnly(int unit);
+        public abstract Texture2D EnvironmentDepthTexture { get; }
 
         #region IDisposable
         ~XRDeviceStrategy()
