@@ -524,9 +524,20 @@ namespace Microsoft.Xna.Platform.Graphics
                 if (!_multiviewPrograms.TryGetValue(key, out shaderProgram))
                 {
                     int multiviewHandle = cvertexShader.GetMultiviewShaderHandle(GL);
-                    shaderProgram = multiviewHandle != -1
-                        ? CreateProgram(cvertexShader, cpixelShader, multiviewHandle)
-                        : new ShaderProgram(-1);
+                    int pixelHandle = cpixelShader.GetEs300FragmentShaderHandle(GL);
+                    try
+                    {
+                        shaderProgram = multiviewHandle != -1 && pixelHandle != -1
+                            ? CreateProgram(cvertexShader, cpixelShader, multiviewHandle, pixelHandle)
+                            : new ShaderProgram(-1);
+                    }
+                    catch (Exception e)
+                    {
+                        Console.WriteLine("[KNISB] multiview: program link failed: " + e.Message);
+                        shaderProgram = new ShaderProgram(-1);
+                    }
+                    Console.WriteLine("[KNISB] multiview: program {0} (vertex variant {1}), {2} so far",
+                        shaderProgram.Program, multiviewHandle, _multiviewPrograms.Count + 1);
                     _multiviewPrograms.Add(key, shaderProgram);
                 }
             }
@@ -630,7 +641,7 @@ namespace Microsoft.Xna.Platform.Graphics
         }
 #endif
 
-        private ShaderProgram CreateProgram(ConcreteVertexShader cvertexShader, ConcretePixelShader cpixelShader, int vertexShaderHandleOverride = -1)
+        private ShaderProgram CreateProgram(ConcreteVertexShader cvertexShader, ConcretePixelShader cpixelShader, int vertexShaderHandleOverride = -1, int pixelShaderHandleOverride = -1)
         {
             int program = GL.CreateProgram();
             GL.CheckGLError();
@@ -639,7 +650,7 @@ namespace Microsoft.Xna.Platform.Graphics
             GL.AttachShader(program, vertexShaderHandle);
             GL.CheckGLError();
 
-            int pixelShaderHandle = cpixelShader.ShaderHandle;
+            int pixelShaderHandle = pixelShaderHandleOverride != -1 ? pixelShaderHandleOverride : cpixelShader.ShaderHandle;
             GL.AttachShader(program, pixelShaderHandle);
             GL.CheckGLError();
 
@@ -971,8 +982,25 @@ namespace Microsoft.Xna.Platform.Graphics
                 DrawTimings.Draw += t4 - t3;
                 DrawTimings.Calls++;
             }
+            MultiviewDrawCheck();
 #endif
         }
+
+#if OCULUS
+        private int _multiviewDrawChecks;
+
+        /// <summary>Temporary: the GL error after the first multiview draws (Release compiles CheckGLError out).</summary>
+        private void MultiviewDrawCheck()
+        {
+            if (Multiview.TargetBound) Multiview.Draws++;
+            if (!Multiview.TargetBound || _multiviewDrawChecks >= 12)
+                return;
+            _multiviewDrawChecks++;
+            ErrorCode error = GL.GetError();
+            Console.WriteLine("[KNISB] multiview draw {0}: program {1}, GL error {2}", _multiviewDrawChecks,
+                _shaderProgram != null ? _shaderProgram.Program : -2, error);
+        }
+#endif
 
         public override void DrawIndexedPrimitives(PrimitiveType primitiveType, int baseVertex, int minVertexIndex, int numVertices, int startIndex, int primitiveCount)
         {
@@ -1052,6 +1080,7 @@ namespace Microsoft.Xna.Platform.Graphics
                 DrawTimings.Draw += t4 - t3;
                 DrawTimings.Calls++;
             }
+            MultiviewDrawCheck();
 #endif
         }
 
@@ -1546,6 +1575,7 @@ namespace Microsoft.Xna.Platform.Graphics
                     multiviewBound = false;
                 }
             }
+            if (multiviewBound) Multiview.Binds++; else Multiview.OneViewBinds++;
             if (Multiview.TargetBound != multiviewBound)
             {
                 // Programs differ between one-view and two-view framebuffers: choose again at the next draw.

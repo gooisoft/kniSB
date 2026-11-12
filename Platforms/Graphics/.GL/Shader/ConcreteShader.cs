@@ -24,35 +24,91 @@ namespace Microsoft.Xna.Platform.Graphics
         internal int ShaderHandle { get { return _shaderHandle; } }
 
 #if OCULUS
-        // The GLSL ES 3.00 source this shader was compiled from (legacy MGFX path), for the multiview variant.
-        private string _glsl300esSource;
+        // The legacy MGFX GLSL this shader came from (GLSL ES 1.00 on the Reach profile), kept for the ES 3.00
+        // variants multiview needs: a multiview program's vertex AND fragment shaders must both be ES 3.00.
+        private string _legacyGlsl;
+        // KNIFX shaders (KNI's built-in effects, e.g. SpriteBatch's) carry several GLSL versions, ES 3.00 among them.
+        private byte[] _knifxBytecode;
+        private bool _compiledAs300es;
+        private bool _variantFailed;
         private int _multiviewShaderHandle = -1;
+        private int _es300ShaderHandle = -1;
+
+        /// <summary>This shader's GLSL ES 3.00 source: converted from legacy MGFX, or the KNIFX ES 3.00 variant. Null if none.</summary>
+        private string GetEs300Source(ShaderType shaderType)
+        {
+            if (_legacyGlsl != null)
+                return ConvertGLSLToGLSL300es(shaderType, _legacyGlsl);
+            if (_knifxBytecode != null)
+            {
+                try
+                {
+                    int offset = FindShaderByteCode(_knifxBytecode, major: 3, minor: 0, es: true);
+                    int length = BitConverter.ToInt32(_knifxBytecode, offset); offset += 4;
+                    return System.Text.Encoding.ASCII.GetString(_knifxBytecode, offset, length).TrimEnd('\0');
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine("[KNISB] multiview: no GLSL ES 3.00 in a KNIFX shader: " + e.Message);
+                }
+            }
+            return null;
+        }
 
         /// <summary>The multiview variant of this vertex shader (compiled on first use); -1 if it cannot have one.</summary>
         internal int GetMultiviewShaderHandle(OGL GL)
         {
-            if (_multiviewShaderHandle != -1 || _glsl300esSource == null)
+            if (_multiviewShaderHandle != -1 || _variantFailed)
                 return _multiviewShaderHandle;
-            string source = Multiview.ToMultiviewSource(_glsl300esSource);
+            string es300 = GetEs300Source(ShaderType.VertexShader);
+            if (es300 == null)
+            {
+                _variantFailed = true;
+                return -1;
+            }
+            string source = Multiview.ToMultiviewSource(es300);
             if (source == null)
             {
                 Console.WriteLine("[KNISB] multiview: vertex shader without a posFixup line, no multiview variant");
-                _glsl300esSource = null;
+                _variantFailed = true;
                 return -1;
             }
-            int handle = GL.CreateShader(ShaderType.VertexShader);
+            _multiviewShaderHandle = CompileVariant(GL, ShaderType.VertexShader, source);
+            _variantFailed = _multiviewShaderHandle == -1;
+            return _multiviewShaderHandle;
+        }
+
+        /// <summary>This fragment shader as GLSL ES 3.00 (itself if already compiled so; else compiled on first use).</summary>
+        internal int GetEs300FragmentShaderHandle(OGL GL)
+        {
+            if (_compiledAs300es)
+                return _shaderHandle;
+            if (_es300ShaderHandle != -1 || _variantFailed)
+                return _es300ShaderHandle;
+            string es300 = GetEs300Source(ShaderType.FragmentShader);
+            if (es300 == null)
+            {
+                _variantFailed = true;
+                return -1;
+            }
+            _es300ShaderHandle = CompileVariant(GL, ShaderType.FragmentShader, es300);
+            _variantFailed = _es300ShaderHandle == -1;
+            return _es300ShaderHandle;
+        }
+
+        private static int CompileVariant(OGL GL, ShaderType shaderType, string source)
+        {
+            int handle = GL.CreateShader(shaderType);
             GL.ShaderSource(handle, System.Text.Encoding.ASCII.GetBytes(source));
             GL.CompileShader(handle);
             int compiled = 0;
             GL.GetShader(handle, ShaderParameter.CompileStatus, out compiled);
             if (compiled != (int)Bool.True)
             {
-                Console.WriteLine("[KNISB] multiview: variant failed to compile: " + GL.GetShaderInfoLog(handle));
+                Console.WriteLine("[KNISB] multiview: {0} variant failed to compile: {1}", shaderType, GL.GetShaderInfoLog(handle));
                 GL.DeleteShader(handle);
-                _glsl300esSource = null;
                 return -1;
             }
-            _multiviewShaderHandle = handle;
             return handle;
         }
 #endif
@@ -84,6 +140,9 @@ namespace Microsoft.Xna.Platform.Graphics
 
                 if (shaderVersion == default) // Handle legacy MGFX
                 {
+#if OCULUS
+                    _legacyGlsl = System.Text.Encoding.ASCII.GetString(shaderBytecode);
+#endif
                     if (this.GraphicsDevice.Adapter.Backend == GraphicsBackend.GLES
                     &&  this.GraphicsDevice.GraphicsProfile >= GraphicsProfile.HiDef)
                     {
@@ -91,8 +150,7 @@ namespace Microsoft.Xna.Platform.Graphics
                         // GLES 3.00 is required for gl_FragData
                         string glsl300esCode = ConvertGLSLToGLSL300es(shaderType, glslCode);
 #if OCULUS
-                        if (shaderType == ShaderType.VertexShader)
-                            _glsl300esSource = glsl300esCode;
+                        _compiledAs300es = true;
 #endif
                         shaderBytecode = System.Text.Encoding.ASCII.GetBytes(glsl300esCode);
 
@@ -107,6 +165,12 @@ namespace Microsoft.Xna.Platform.Graphics
                 }
                 else // Handle KNIFX
                 {
+#if OCULUS
+                    _knifxBytecode = shaderBytecode;
+                    _compiledAs300es = (this.GraphicsDevice.Adapter.Backend == GraphicsBackend.GLES
+                                        || this.GraphicsDevice.Adapter.Backend == GraphicsBackend.WebGL)
+                                       && this.GraphicsDevice.GraphicsProfile >= GraphicsProfile.HiDef;
+#endif
                     int bytecodeOffset;
 
                     if (this.GraphicsDevice.Adapter.Backend == GraphicsBackend.GLES
@@ -253,6 +317,12 @@ namespace Microsoft.Xna.Platform.Graphics
                 if (GL.IsShader(_multiviewShaderHandle))
                     GL.DeleteShader(_multiviewShaderHandle);
                 _multiviewShaderHandle = -1;
+            }
+            if (_es300ShaderHandle != -1)
+            {
+                if (GL.IsShader(_es300ShaderHandle))
+                    GL.DeleteShader(_es300ShaderHandle);
+                _es300ShaderHandle = -1;
             }
 #endif
 

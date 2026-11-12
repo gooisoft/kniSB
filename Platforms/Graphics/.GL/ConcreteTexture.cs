@@ -668,6 +668,15 @@ namespace Microsoft.Xna.Platform.Graphics
         internal static readonly Vector4[] EyeRows = new Vector4[8];
         internal static int EyeVersion = 1;
 
+        // Temporary counters (running totals) for the bench log.
+        public static long Binds, Draws, OneViewBinds, Acquires;
+        public static int LastImageIndex = -1, LastTexture;
+        public static string Counters()
+        {
+            return string.Format("binds={0} oneViewBinds={1} draws={2} acquires={3} lastIndex={4} lastTexture={5} enabled={6}",
+                Binds, OneViewBinds, Draws, Acquires, LastImageIndex, LastTexture, Enabled);
+        }
+
         static Multiview()
         {
             SetRightFromLeft(Matrix.Identity);
@@ -691,19 +700,22 @@ namespace Microsoft.Xna.Platform.Graphics
         /// <summary>The multiview variant of a vertex shader's GLSL ES 3.00 source; null if it has no posFixup line.</summary>
         internal static string ToMultiviewSource(string glsl300es)
         {
-            const string version = "#version 300 es\n";
             const string fixup = "gl_Position.y = gl_Position.y * posFixup.y;";
             int at = glsl300es.IndexOf(fixup, StringComparison.Ordinal);
-            if (!glsl300es.StartsWith(version, StringComparison.Ordinal) || at < 0)
+            int versionAt = glsl300es.IndexOf("#version 300 es", StringComparison.Ordinal);
+            if (at < 0 || versionAt < 0)
                 return null;
+            int afterVersion = glsl300es.IndexOf('\n', versionAt);
+            if (afterVersion < 0 || afterVersion > at)
+                return null;
+            afterVersion++;
             string eye = "gl_Position = mat4(mv_eye[int(gl_ViewID_OVR)*4], mv_eye[int(gl_ViewID_OVR)*4+1], "
                        + "mv_eye[int(gl_ViewID_OVR)*4+2], mv_eye[int(gl_ViewID_OVR)*4+3]) * gl_Position;\n\t";
-            string body = glsl300es.Substring(0, at) + eye + glsl300es.Substring(at);
-            return version
+            return glsl300es.Substring(0, afterVersion)
                  + "#extension GL_OVR_multiview2 : require\n"
                  + "layout(num_views = 2) in;\n"
                  + "uniform vec4 mv_eye[8];\n"
-                 + body.Substring(version.Length);
+                 + glsl300es.Substring(afterVersion, at - afterVersion) + eye + glsl300es.Substring(at);
         }
     }
 
