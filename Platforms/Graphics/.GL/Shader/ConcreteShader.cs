@@ -23,6 +23,40 @@ namespace Microsoft.Xna.Platform.Graphics
 
         internal int ShaderHandle { get { return _shaderHandle; } }
 
+#if OCULUS
+        // The GLSL ES 3.00 source this shader was compiled from (legacy MGFX path), for the multiview variant.
+        private string _glsl300esSource;
+        private int _multiviewShaderHandle = -1;
+
+        /// <summary>The multiview variant of this vertex shader (compiled on first use); -1 if it cannot have one.</summary>
+        internal int GetMultiviewShaderHandle(OGL GL)
+        {
+            if (_multiviewShaderHandle != -1 || _glsl300esSource == null)
+                return _multiviewShaderHandle;
+            string source = Multiview.ToMultiviewSource(_glsl300esSource);
+            if (source == null)
+            {
+                Console.WriteLine("[KNISB] multiview: vertex shader without a posFixup line, no multiview variant");
+                _glsl300esSource = null;
+                return -1;
+            }
+            int handle = GL.CreateShader(ShaderType.VertexShader);
+            GL.ShaderSource(handle, System.Text.Encoding.ASCII.GetBytes(source));
+            GL.CompileShader(handle);
+            int compiled = 0;
+            GL.GetShader(handle, ShaderParameter.CompileStatus, out compiled);
+            if (compiled != (int)Bool.True)
+            {
+                Console.WriteLine("[KNISB] multiview: variant failed to compile: " + GL.GetShaderInfoLog(handle));
+                GL.DeleteShader(handle);
+                _glsl300esSource = null;
+                return -1;
+            }
+            _multiviewShaderHandle = handle;
+            return handle;
+        }
+#endif
+
 
         internal ConcreteShader(GraphicsContextStrategy contextStrategy, ShaderVersion shaderVersion, byte[] shaderBytecode, SamplerInfo[] samplers, int[] cBuffers, VertexAttribute[] attributes)
             : base(contextStrategy, shaderVersion, shaderBytecode, samplers, cBuffers, attributes)
@@ -56,6 +90,10 @@ namespace Microsoft.Xna.Platform.Graphics
                         string glslCode = System.Text.Encoding.ASCII.GetString(shaderBytecode);
                         // GLES 3.00 is required for gl_FragData
                         string glsl300esCode = ConvertGLSLToGLSL300es(shaderType, glslCode);
+#if OCULUS
+                        if (shaderType == ShaderType.VertexShader)
+                            _glsl300esSource = glsl300esCode;
+#endif
                         shaderBytecode = System.Text.Encoding.ASCII.GetBytes(glsl300esCode);
 
                         GL.ShaderSource(_shaderHandle, shaderBytecode);
@@ -209,6 +247,14 @@ namespace Microsoft.Xna.Platform.Graphics
                 }
                 _shaderHandle = -1;
             }
+#if OCULUS
+            if (_multiviewShaderHandle != -1)
+            {
+                if (GL.IsShader(_multiviewShaderHandle))
+                    GL.DeleteShader(_multiviewShaderHandle);
+                _multiviewShaderHandle = -1;
+            }
+#endif
 
             base.PlatformGraphicsContextLost();
         }

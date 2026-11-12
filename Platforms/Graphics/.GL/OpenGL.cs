@@ -895,6 +895,14 @@ namespace Microsoft.Xna.Platform.Graphics.OpenGL
         internal RenderbufferStorageMultisampleDelegate RenderbufferStorageMultisampleOnTile;
         internal FramebufferTexture2DMultiSampleDelegate FramebufferTexture2DMultiSampleOnTile;
 
+        // GL_OVR_multiview / GL_OVR_multiview_multisampled_render_to_texture: one framebuffer, both eyes (OCULUS).
+        [System.Security.SuppressUnmanagedCodeSecurity()]
+        [UnmanagedFunctionPointer(callingConvention)]
+        [MonoNativeFunctionWrapper]
+        internal delegate void FramebufferTextureMultisampleMultiviewDelegate(FramebufferTarget target, FramebufferAttachment attachment,
+            int texture, int level, int samples, int baseViewIndex, int numViews);
+        internal FramebufferTextureMultisampleMultiviewDelegate FramebufferTextureMultisampleMultiviewOVR;
+
         [System.Security.SuppressUnmanagedCodeSecurity()]
         [UnmanagedFunctionPointer(callingConvention)]
         [MonoNativeFunctionWrapper]
@@ -1729,6 +1737,10 @@ namespace Microsoft.Xna.Platform.Graphics.OpenGL
             {
                 RenderbufferStorageMultisampleOnTile = LoadFunctionOrNull<OGL.RenderbufferStorageMultisampleDelegate>("glRenderbufferStorageMultisampleEXT");
                 FramebufferTexture2DMultiSampleOnTile = LoadFunctionOrNull<OGL.FramebufferTexture2DMultiSampleDelegate>("glFramebufferTexture2DMultisampleEXT");
+            }
+            if (Extensions.Contains("GL_OVR_multiview2") && Extensions.Contains("GL_OVR_multiview_multisampled_render_to_texture"))
+            {
+                FramebufferTextureMultisampleMultiviewOVR = LoadFunctionOrNull<OGL.FramebufferTextureMultisampleMultiviewDelegate>("glFramebufferTextureMultisampleMultiviewOVR");
             }
 #endif
 

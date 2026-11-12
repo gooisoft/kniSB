@@ -52,6 +52,8 @@ namespace Microsoft.Xna.Platform.XR
         // target and blit it into the swapchain image with a y-flip (the original path). debug.ts.direct.
         bool _hasImageLayoutFlip;
         bool _directEyeRender;
+        // Both eyes in one draw (GL_OVR_multiview2): one swapchain with two layers; debug.ts.multiview=1 (needs direct).
+        bool _multiview;
         unsafe CompositionLayerImageLayoutFB* _imageLayoutFlip;
 
         float[] _SupportedDisplayRefreshRates;
@@ -659,7 +661,7 @@ namespace Microsoft.Xna.Platform.XR
                 int swapchainTexture = (int)_Renderer.FrameBuffer[eyeIndex].ColorSwapChainImage[textureIndex].Image;
                 // Store the values as rendered, as the blit did (no linear-to-sRGB conversion on write).
                 Android.Opengl.GLES30.GlDisable(FRAMEBUFFER_SRGB);
-                if (!Microsoft.Xna.Platform.Graphics.OnTileMultisample.SetColorOverride(rt, swapchainTexture))
+                if (!Microsoft.Xna.Platform.Graphics.OnTileMultisample.SetColorOverride(rt, swapchainTexture, _multiview ? 2 : 1))
                 {
                     // Not an on-tile target after all: fall back to the blit path for good. The image stays acquired;
                     // CommitRenderTarget sees _directEyeRender is false and blits into it without acquiring again.
@@ -842,7 +844,7 @@ namespace Microsoft.Xna.Platform.XR
                                 (int)_Renderer.FrameBuffer[eye].ColorSwapChain.Width;
                         projection_layer_elements[eye].SubImage.ImageRect.Extent.Height =
                                 (int)_Renderer.FrameBuffer[eye].ColorSwapChain.Height;
-                        projection_layer_elements[eye].SubImage.ImageArrayIndex = 0;
+                        projection_layer_elements[eye].SubImage.ImageArrayIndex = _multiview ? (uint)eye : 0;
                     }
 
                     _Layers[LayerCount++].Projection = projection_layer;
@@ -1706,17 +1708,39 @@ namespace Microsoft.Xna.Platform.XR
                     // TODO
                 }
 
+                // Multiview: both eyes from one draw into one 2-layer swapchain. Needs the direct path (drawing straight
+                // into the swapchain image) and the GL multiview functions.
+                string glExtensions = Android.Opengl.GLES20.GlGetString(Android.Opengl.GLES20.GlExtensions) ?? "";
+                _multiview = BenchProp("debug.ts.multiview", 0) == 1 && BenchProp("debug.ts.direct", 0) == 1
+                             && _hasImageLayoutFlip
+                             && glExtensions.Contains("GL_OVR_multiview2")
+                             && glExtensions.Contains("GL_OVR_multiview_multisampled_render_to_texture");
+                Console.WriteLine("[XRBENCH] multiview={0}", _multiview);
+
                 // Create the frame buffers.
                 for (int eye = 0; eye < ovrMaxNumEyes; eye++)
                 {
+                    if (_multiview && eye > 0)
+                    {
+                        // The right eye shares the left eye's 2-layer swapchain (layer 1).
+                        _Renderer.FrameBuffer[eye] = _Renderer.FrameBuffer[0];
+                        continue;
+                    }
                     ovrFramebuffer_Create(
                         ref _Renderer.FrameBuffer[eye],
                         SurfaceFormat.ColorSRgba, //SRGB8_ALPHA8
                         (int)ViewConfigurationView[0].RecommendedImageRectWidth,
                         (int)ViewConfigurationView[0].RecommendedImageRectHeight,
-                        NUM_MULTI_SAMPLES
+                        NUM_MULTI_SAMPLES,
+                        _multiview ? 2 : 1
                         );
                 }
+                if (_multiview && !_directEyeRender)
+                {
+                    Console.WriteLine("[XRBENCH] multiview off: the direct path is not available");
+                    _multiview = false;
+                }
+                Microsoft.Xna.Platform.Graphics.Multiview.Enabled = _multiview;
 
                 // Foveation only affects what is drawn INTO the swapchain images, i.e. the direct eye path; the blit
                 // path copies at full detail. Bench switch debug.ts.fov: 0 none, 1 low, 2 medium, 3 high (default).
@@ -1747,7 +1771,8 @@ namespace Microsoft.Xna.Platform.XR
             SurfaceFormat colorFormat,
             int width,
             int height,
-            int multisamples)
+            int multisamples,
+            int arraySize = 1)
         {
             Result xrResult;
 
@@ -1786,7 +1811,7 @@ namespace Microsoft.Xna.Platform.XR
             swapChainCreateInfo.Width = (uint)width;
             swapChainCreateInfo.Height = (uint)height;
             swapChainCreateInfo.FaceCount = 1;
-            swapChainCreateInfo.ArraySize = 1;
+            swapChainCreateInfo.ArraySize = (uint)arraySize;
             swapChainCreateInfo.MipCount = 1;
 
             // Enable Foveation on this swapchain
@@ -1849,6 +1874,11 @@ namespace Microsoft.Xna.Platform.XR
             }
 
             frameBuffer.FrameBuffers = new int[frameBuffer.TextureSwapChainLength];
+            if (arraySize > 1)
+            {
+                // Array images are drawn into directly (multiview); the per-image 2D blit framebuffers are not used.
+                return true;
+            }
 
             Android.Opengl.GLES30.GlGenFramebuffers((int)frameBuffer.TextureSwapChainLength, frameBuffer.FrameBuffers, 0);
 

@@ -358,6 +358,13 @@ namespace Microsoft.Xna.Platform.Graphics
             }
 
 
+#if OCULUS
+            if (Multiview.TargetBound)
+            {
+                ApplyMultiviewEyes(_shaderProgram);
+            }
+#endif
+
             // Apply Constant Buffers
             PlatformApplyConstantBuffers(cvertexShader, _shaderProgram,
                 ((IPlatformConstantBufferCollection)_vertexConstantBuffers).Strategy.ToConcrete<ConcreteConstantBufferCollection>());
@@ -509,6 +516,22 @@ namespace Microsoft.Xna.Platform.Graphics
             // Lookup the shader program.
             ShaderProgram shaderProgram;
             int shaderProgramHash = (cvertexShader.GetHashCode() ^ cpixelShader.GetHashCode());
+#if OCULUS
+            if (Multiview.TargetBound)
+            {
+                // Both eyes in one draw: the multiview variant of the vertex shader.
+                long key = ((long)cvertexShader.GetHashCode() << 32) ^ (uint)cpixelShader.GetHashCode();
+                if (!_multiviewPrograms.TryGetValue(key, out shaderProgram))
+                {
+                    int multiviewHandle = cvertexShader.GetMultiviewShaderHandle(GL);
+                    shaderProgram = multiviewHandle != -1
+                        ? CreateProgram(cvertexShader, cpixelShader, multiviewHandle)
+                        : new ShaderProgram(-1);
+                    _multiviewPrograms.Add(key, shaderProgram);
+                }
+            }
+            else
+#endif
             if (!deviceStrategy.ProgramCache.TryGetValue(shaderProgramHash, out shaderProgram))
             {
                 // the key does not exist so we need to link the programs
@@ -586,18 +609,48 @@ namespace Microsoft.Xna.Platform.Graphics
             GL.CheckGLError();
         }
 
-        private ShaderProgram CreateProgram(ConcreteVertexShader cvertexShader, ConcretePixelShader cpixelShader)
+#if OCULUS
+        private readonly Dictionary<long, ShaderProgram> _multiviewPrograms = new Dictionary<long, ShaderProgram>();
+
+        /// <summary>Uploads the eye matrices to a multiview program if it does not have the current ones.</summary>
+        private unsafe void ApplyMultiviewEyes(ShaderProgram shaderProgram)
+        {
+            if (shaderProgram == null || shaderProgram.MultiviewEyeVersion == Multiview.EyeVersion)
+                return;
+            int location = this.GetUniformLocation(shaderProgram, "mv_eye");
+            if (location != -1)
+            {
+                fixed (Vector4* rows = Multiview.EyeRows)
+                {
+                    GL.Uniform4(location, 8, rows);
+                }
+                GL.CheckGLError();
+            }
+            shaderProgram.MultiviewEyeVersion = Multiview.EyeVersion;
+        }
+#endif
+
+        private ShaderProgram CreateProgram(ConcreteVertexShader cvertexShader, ConcretePixelShader cpixelShader, int vertexShaderHandleOverride = -1)
         {
             int program = GL.CreateProgram();
             GL.CheckGLError();
 
-            int vertexShaderHandle = cvertexShader.ShaderHandle;
+            int vertexShaderHandle = vertexShaderHandleOverride != -1 ? vertexShaderHandleOverride : cvertexShader.ShaderHandle;
             GL.AttachShader(program, vertexShaderHandle);
             GL.CheckGLError();
 
             int pixelShaderHandle = cpixelShader.ShaderHandle;
             GL.AttachShader(program, pixelShaderHandle);
             GL.CheckGLError();
+
+#if OCULUS
+            // Fixed attribute locations (attribute i at location i): the vertex shader keeps ONE set of locations, and
+            // its normal and multiview programs must agree on them.
+            for (int i = 0; i < cvertexShader.Attributes.Length; i++)
+            {
+                GL.BindAttribLocation((uint)program, (uint)i, cvertexShader.Attributes[i].name);
+            }
+#endif
 
             //vertexShader.BindVertexAttributes(program);
 
@@ -1401,6 +1454,13 @@ namespace Microsoft.Xna.Platform.Graphics
 
         protected override void PlatformApplyDefaultRenderTarget()
         {
+#if OCULUS
+            if (Multiview.TargetBound)
+            {
+                Multiview.TargetBound = false;
+                _vertexShaderDirty = true;
+            }
+#endif
             GL.BindFramebuffer(FramebufferTarget.Framebuffer,((IPlatformGraphicsContext)this.Context).DeviceStrategy.ToConcrete<ConcreteGraphicsDevice>()._glDefaultFramebuffer);
             GL.CheckGLError();
 
@@ -1471,15 +1531,26 @@ namespace Microsoft.Xna.Platform.Graphics
 
 #if OCULUS
             // An on-tile target pointed at another texture for now (the XR device's swapchain image): draw into that.
+            bool multiviewBound = false;
             if (base.RenderTargetCount == 1)
             {
                 IRenderTargetStrategyGL renderTargetGL0 = ((IPlatformTexture)base.CurrentRenderTargetBindings[0].RenderTarget).GetTextureStrategy<ITextureStrategy>() as IRenderTargetStrategyGL;
-                int overrideFramebuffer = OnTileMultisample.OverrideFramebufferOf(renderTargetGL0, GL);
+                int overrideFramebuffer = OnTileMultisample.OverrideFramebufferOf(renderTargetGL0, GL, out multiviewBound);
                 if (overrideFramebuffer != 0)
                 {
                     GL.BindFramebuffer(FramebufferTarget.Framebuffer, overrideFramebuffer);
                     GL.CheckGLError();
                 }
+                else
+                {
+                    multiviewBound = false;
+                }
+            }
+            if (Multiview.TargetBound != multiviewBound)
+            {
+                // Programs differ between one-view and two-view framebuffers: choose again at the next draw.
+                Multiview.TargetBound = multiviewBound;
+                _vertexShaderDirty = true;
             }
 #endif
 

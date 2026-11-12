@@ -564,7 +564,7 @@ namespace Microsoft.Xna.Platform.Graphics
                     renderTargetGL.GLStencilBuffer = renderTargetGL.GLDepthBuffer;
             }
 
-            OnTileMultisample.Register(renderTargetGL, multiSampleCount);
+            OnTileMultisample.Register(renderTargetGL, multiSampleCount, width, height);
             Console.WriteLine("[KNISB] On-tile multisampled render target {0}x{1}, {2} samples, depth {3}", width, height, multiSampleCount, preferredDepthFormat);
             return true;
         }
@@ -652,6 +652,62 @@ namespace Microsoft.Xna.Platform.Graphics
 
 #if OCULUS
     /// <summary>
+    /// Multiview (GL_OVR_multiview2): the eye target is the swapchain's 2-layer image and each draw reaches both eyes.
+    /// The app draws once, as the left eye; every vertex shader's multiview variant ends with
+    /// gl_Position = mv_eye[gl_ViewID_OVR] * gl_Position (before posFixup), where view 0 is the identity and view 1 is
+    /// inverse(eyeView_left x proj_left) x (eyeView_right x proj_right): any transform chain ending in the left eye's
+    /// view-projection becomes the right eye's.
+    /// </summary>
+    public static class Multiview
+    {
+        /// <summary>Set by the XR device when its eye target is a multiview target.</summary>
+        public static bool Enabled;
+        /// <summary>The bound framebuffer has two views: programs must be the multiview variants.</summary>
+        internal static bool TargetBound;
+        /// <summary>View 0 then view 1, each as four rows of the XNA matrix (read as columns by the shader = transpose).</summary>
+        internal static readonly Vector4[] EyeRows = new Vector4[8];
+        internal static int EyeVersion = 1;
+
+        static Multiview()
+        {
+            SetRightFromLeft(Matrix.Identity);
+        }
+
+        /// <summary>The right eye's clip position from the left eye's: inverse(VP_left) x VP_right.</summary>
+        public static void SetRightFromLeft(Matrix rightFromLeft)
+        {
+            Matrix identity = Matrix.Identity;
+            EyeRows[0] = new Vector4(identity.M11, identity.M12, identity.M13, identity.M14);
+            EyeRows[1] = new Vector4(identity.M21, identity.M22, identity.M23, identity.M24);
+            EyeRows[2] = new Vector4(identity.M31, identity.M32, identity.M33, identity.M34);
+            EyeRows[3] = new Vector4(identity.M41, identity.M42, identity.M43, identity.M44);
+            EyeRows[4] = new Vector4(rightFromLeft.M11, rightFromLeft.M12, rightFromLeft.M13, rightFromLeft.M14);
+            EyeRows[5] = new Vector4(rightFromLeft.M21, rightFromLeft.M22, rightFromLeft.M23, rightFromLeft.M24);
+            EyeRows[6] = new Vector4(rightFromLeft.M31, rightFromLeft.M32, rightFromLeft.M33, rightFromLeft.M34);
+            EyeRows[7] = new Vector4(rightFromLeft.M41, rightFromLeft.M42, rightFromLeft.M43, rightFromLeft.M44);
+            EyeVersion++;
+        }
+
+        /// <summary>The multiview variant of a vertex shader's GLSL ES 3.00 source; null if it has no posFixup line.</summary>
+        internal static string ToMultiviewSource(string glsl300es)
+        {
+            const string version = "#version 300 es\n";
+            const string fixup = "gl_Position.y = gl_Position.y * posFixup.y;";
+            int at = glsl300es.IndexOf(fixup, StringComparison.Ordinal);
+            if (!glsl300es.StartsWith(version, StringComparison.Ordinal) || at < 0)
+                return null;
+            string eye = "gl_Position = mat4(mv_eye[int(gl_ViewID_OVR)*4], mv_eye[int(gl_ViewID_OVR)*4+1], "
+                       + "mv_eye[int(gl_ViewID_OVR)*4+2], mv_eye[int(gl_ViewID_OVR)*4+3]) * gl_Position;\n\t";
+            string body = glsl300es.Substring(0, at) + eye + glsl300es.Substring(at);
+            return version
+                 + "#extension GL_OVR_multiview2 : require\n"
+                 + "layout(num_views = 2) in;\n"
+                 + "uniform vec4 mv_eye[8];\n"
+                 + body.Substring(version.Length);
+        }
+    }
+
+    /// <summary>
     /// Render targets multisampled on the GPU tile (GL_EXT_multisampled_render_to_texture) rather than through a
     /// multisampled renderbuffer and a blit resolve. Opt-in per render target: set <see cref="Enabled"/> while
     /// constructing it (the XR device does this for its eye targets), then clear it.
@@ -664,23 +720,35 @@ namespace Microsoft.Xna.Platform.Graphics
         private sealed class Info
         {
             internal int Samples;
+            internal int Width;
+            internal int Height;
             /// <summary>A GL texture to render into instead of the target's own (0 = its own).</summary>
             internal int ColorOverride;
+            /// <summary>2 = ColorOverride is a 2-layer array texture drawn with multiview (both eyes at once).</summary>
+            internal int OverrideViews = 1;
             /// <summary>One framebuffer per override texture: the same depth buffer, that texture as color.</summary>
             internal readonly Dictionary<int, int> OverrideFramebuffers = new Dictionary<int, int>();
+            /// <summary>The 2-layer depth/stencil array texture used with multiview framebuffers.</summary>
+            internal int DepthArrayTexture;
         }
 
         private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IRenderTargetStrategyGL, Info> _infos =
             new System.Runtime.CompilerServices.ConditionalWeakTable<IRenderTargetStrategyGL, Info>();
 
-        internal static void Register(IRenderTargetStrategyGL renderTargetGL, int samples)
+        internal static void Register(IRenderTargetStrategyGL renderTargetGL, int samples, int width, int height)
         {
-            _infos.AddOrUpdate(renderTargetGL, new Info { Samples = samples });
+            _infos.AddOrUpdate(renderTargetGL, new Info { Samples = samples, Width = width, Height = height });
         }
 
         internal static void Unregister(IRenderTargetStrategyGL renderTargetGL)
         {
             _infos.Remove(renderTargetGL);
+        }
+
+        /// <summary>True if the GL has the OVR multiview functions this needs.</summary>
+        internal static bool MultiviewSupported(OGL GL)
+        {
+            return GL.FramebufferTextureMultisampleMultiviewOVR != null;
         }
 
         /// <summary>The on-tile sample count of this render target; 0 = an ordinary render target.</summary>
@@ -695,13 +763,14 @@ namespace Microsoft.Xna.Platform.Graphics
         /// rendered this frame), so drawing goes straight into it with no copy afterwards. 0 restores its own texture.
         /// Takes effect the next time the render target is set. False = not an on-tile render target.
         /// </summary>
-        internal static bool SetColorOverride(RenderTarget2D renderTarget, int glTexture)
+        internal static bool SetColorOverride(RenderTarget2D renderTarget, int glTexture, int views = 1)
         {
             IRenderTargetStrategyGL renderTargetGL = ((IPlatformTexture)renderTarget).GetTextureStrategy<ITextureStrategy>() as IRenderTargetStrategyGL;
             Info info;
             if (renderTargetGL == null || !_infos.TryGetValue(renderTargetGL, out info))
                 return false;
             info.ColorOverride = glTexture;
+            info.OverrideViews = views;
             return true;
         }
 
@@ -710,9 +779,17 @@ namespace Microsoft.Xna.Platform.Graphics
         /// </summary>
         internal static int OverrideFramebufferOf(IRenderTargetStrategyGL renderTargetGL, OGL GL)
         {
+            bool multiview;
+            return OverrideFramebufferOf(renderTargetGL, GL, out multiview);
+        }
+
+        internal static int OverrideFramebufferOf(IRenderTargetStrategyGL renderTargetGL, OGL GL, out bool multiview)
+        {
+            multiview = false;
             Info info;
             if (renderTargetGL == null || !_infos.TryGetValue(renderTargetGL, out info) || info.ColorOverride == 0)
                 return 0;
+            multiview = info.OverrideViews == 2;
 
             int framebuffer;
             if (info.OverrideFramebuffers.TryGetValue(info.ColorOverride, out framebuffer))
@@ -722,14 +799,37 @@ namespace Microsoft.Xna.Platform.Graphics
             GL.CheckGLError();
             GL.BindFramebuffer(FramebufferTarget.Framebuffer, framebuffer);
             GL.CheckGLError();
+            if (multiview)
+            {
+                // Both eyes: the swapchain's 2-layer array texture as color, a 2-layer depth/stencil array texture,
+                // each multisampled on the tile.
+                if (info.DepthArrayTexture == 0)
+                {
+                    int[] depthTex = new int[1];
+                    Android.Opengl.GLES30.GlGenTextures(1, depthTex, 0);
+                    Android.Opengl.GLES30.GlBindTexture(0x8C1A /*GL_TEXTURE_2D_ARRAY*/, depthTex[0]);
+                    Android.Opengl.GLES30.GlTexStorage3D(0x8C1A, 1, 0x88F0 /*GL_DEPTH24_STENCIL8*/, info.Width, info.Height, 2);
+                    Android.Opengl.GLES30.GlBindTexture(0x8C1A, 0);
+                    info.DepthArrayTexture = depthTex[0];
+                }
+                GL.FramebufferTextureMultisampleMultiviewOVR(FramebufferTarget.Framebuffer, (FramebufferAttachment)0x821A /*GL_DEPTH_STENCIL_ATTACHMENT*/,
+                    info.DepthArrayTexture, 0, info.Samples, 0, 2);
+                GL.CheckGLError();
+                GL.FramebufferTextureMultisampleMultiviewOVR(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
+                    info.ColorOverride, 0, info.Samples, 0, 2);
+                GL.CheckGLError();
+            }
+            else
+            {
             GL.FramebufferRenderbuffer(FramebufferTarget.Framebuffer, FramebufferAttachment.DepthAttachment, RenderbufferTarget.Renderbuffer, renderTargetGL.GLDepthBuffer);
             GL.CheckGLError();
             GL.FramebufferRenderbuffer(FramebufferTarget.Framebuffer, FramebufferAttachment.StencilAttachment, RenderbufferTarget.Renderbuffer, renderTargetGL.GLStencilBuffer);
             GL.CheckGLError();
             GL.FramebufferTexture2DMultiSampleOnTile(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0, TextureTarget.Texture2D, info.ColorOverride, 0, info.Samples);
             GL.CheckGLError();
+            }
             FramebufferErrorCode status = GL.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
-            Console.WriteLine("[KNISB] On-tile override framebuffer {0} for texture {1}: {2}", framebuffer, info.ColorOverride, status);
+            Console.WriteLine("[KNISB] On-tile override framebuffer {0} for texture {1} ({2} view(s)): {3}", framebuffer, info.ColorOverride, info.OverrideViews, status);
             if (status != FramebufferErrorCode.FramebufferComplete)
             {
                 GL.DeleteFramebuffer(framebuffer);
