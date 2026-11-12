@@ -357,6 +357,15 @@ namespace Microsoft.Xna.Platform.Graphics
             {
                 var GL = contextStrategy.ToConcrete<ConcreteGraphicsContextGL>().GL;
 
+#if OCULUS
+                // Enabled = a new on-tile target; already registered = one being re-created after a lost context.
+                if (multiSampleCount > 0
+                &&  (OnTileMultisample.Enabled || OnTileMultisample.SamplesOf(renderTargetGL) > 0)
+                &&  PlatformCreateRenderTargetOnTile(renderTargetGL, contextStrategy, GL, width, height, preferredDepthFormat, multiSampleCount))
+                    return;
+                OnTileMultisample.Unregister(renderTargetGL);
+#endif
+
                 if (multiSampleCount > 0)
                 {
                     RenderbufferStorage colorInternalFormat = default;
@@ -507,6 +516,60 @@ namespace Microsoft.Xna.Platform.Graphics
             return;
         }
 
+#if OCULUS
+        /// <summary>
+        /// A multisampled render target that is resolved on the GPU tile (GL_EXT_multisampled_render_to_texture): no
+        /// multisampled color buffer exists in memory; the color attachment is the render target's own texture, attached
+        /// with a sample count (see PlatformApplyRenderTargets), and the depth buffer is an on-tile multisampled
+        /// renderbuffer that is discarded at resolve. False = not possible here; the caller uses the ordinary path.
+        /// </summary>
+        private static bool PlatformCreateRenderTargetOnTile(IRenderTargetStrategyGL renderTargetGL, GraphicsContextStrategy contextStrategy, OGL GL,
+            int width, int height, DepthFormat preferredDepthFormat, int multiSampleCount)
+        {
+            if (GL.FramebufferTexture2DMultiSampleOnTile == null || GL.RenderbufferStorageMultisampleOnTile == null)
+                return false;
+
+            RenderbufferStorage depthInternalFormat;
+            switch (preferredDepthFormat)
+            {
+                case DepthFormat.None:
+                    depthInternalFormat = 0;
+                    break;
+                case DepthFormat.Depth16:
+                    depthInternalFormat = RenderbufferStorage.DepthComponent16;
+                    break;
+                case DepthFormat.Depth24:
+                    if (!contextStrategy.Capabilities.SupportsDepth24)
+                        return false;
+                    depthInternalFormat = RenderbufferStorage.DepthComponent24oes;
+                    break;
+                case DepthFormat.Depth24Stencil8:
+                    if (!contextStrategy.Capabilities.SupportsPackedDepthStencil)
+                        return false;
+                    depthInternalFormat = RenderbufferStorage.Depth24Stencil8oes;
+                    break;
+                default:
+                    return false;
+            }
+
+            if (depthInternalFormat != 0)
+            {
+                renderTargetGL.GLDepthBuffer = GL.GenRenderbuffer();
+                GL.CheckGLError();
+                GL.BindRenderbuffer(RenderbufferTarget.Renderbuffer, renderTargetGL.GLDepthBuffer);
+                GL.CheckGLError();
+                GL.RenderbufferStorageMultisampleOnTile(RenderbufferTarget.Renderbuffer, multiSampleCount, depthInternalFormat, width, height);
+                GL.CheckGLError();
+                if (preferredDepthFormat == DepthFormat.Depth24Stencil8)
+                    renderTargetGL.GLStencilBuffer = renderTargetGL.GLDepthBuffer;
+            }
+
+            OnTileMultisample.Register(renderTargetGL, multiSampleCount);
+            Console.WriteLine("[KNISB] On-tile multisampled render target {0}x{1}, {2} samples, depth {3}", width, height, multiSampleCount, preferredDepthFormat);
+            return true;
+        }
+#endif
+
         internal static void PlatformDeleteRenderTarget(IRenderTargetStrategyGL renderTargetGL, GraphicsContextStrategy contextStrategy)
         {
             contextStrategy.ToConcrete<ConcreteGraphicsContextGL>().BindDisposeContext();
@@ -586,4 +649,96 @@ namespace Microsoft.Xna.Platform.Graphics
         }
 
     }
+
+#if OCULUS
+    /// <summary>
+    /// Render targets multisampled on the GPU tile (GL_EXT_multisampled_render_to_texture) rather than through a
+    /// multisampled renderbuffer and a blit resolve. Opt-in per render target: set <see cref="Enabled"/> while
+    /// constructing it (the XR device does this for its eye targets), then clear it.
+    /// </summary>
+    internal static class OnTileMultisample
+    {
+        /// <summary>While true, multisampled render targets being created are made on-tile where possible.</summary>
+        internal static bool Enabled;
+
+        private sealed class Info
+        {
+            internal int Samples;
+            /// <summary>A GL texture to render into instead of the target's own (0 = its own).</summary>
+            internal int ColorOverride;
+            /// <summary>One framebuffer per override texture: the same depth buffer, that texture as color.</summary>
+            internal readonly Dictionary<int, int> OverrideFramebuffers = new Dictionary<int, int>();
+        }
+
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IRenderTargetStrategyGL, Info> _infos =
+            new System.Runtime.CompilerServices.ConditionalWeakTable<IRenderTargetStrategyGL, Info>();
+
+        internal static void Register(IRenderTargetStrategyGL renderTargetGL, int samples)
+        {
+            _infos.AddOrUpdate(renderTargetGL, new Info { Samples = samples });
+        }
+
+        internal static void Unregister(IRenderTargetStrategyGL renderTargetGL)
+        {
+            _infos.Remove(renderTargetGL);
+        }
+
+        /// <summary>The on-tile sample count of this render target; 0 = an ordinary render target.</summary>
+        internal static int SamplesOf(IRenderTargetStrategyGL renderTargetGL)
+        {
+            Info info;
+            return renderTargetGL != null && _infos.TryGetValue(renderTargetGL, out info) ? info.Samples : 0;
+        }
+
+        /// <summary>
+        /// Points an on-tile render target at another GL texture of the same size (the XR swapchain image being
+        /// rendered this frame), so drawing goes straight into it with no copy afterwards. 0 restores its own texture.
+        /// Takes effect the next time the render target is set. False = not an on-tile render target.
+        /// </summary>
+        internal static bool SetColorOverride(RenderTarget2D renderTarget, int glTexture)
+        {
+            IRenderTargetStrategyGL renderTargetGL = ((IPlatformTexture)renderTarget).GetTextureStrategy<ITextureStrategy>() as IRenderTargetStrategyGL;
+            Info info;
+            if (renderTargetGL == null || !_infos.TryGetValue(renderTargetGL, out info))
+                return false;
+            info.ColorOverride = glTexture;
+            return true;
+        }
+
+        /// <summary>
+        /// The framebuffer to bind instead of the target's own while a color override is set (made on first use), or 0.
+        /// </summary>
+        internal static int OverrideFramebufferOf(IRenderTargetStrategyGL renderTargetGL, OGL GL)
+        {
+            Info info;
+            if (renderTargetGL == null || !_infos.TryGetValue(renderTargetGL, out info) || info.ColorOverride == 0)
+                return 0;
+
+            int framebuffer;
+            if (info.OverrideFramebuffers.TryGetValue(info.ColorOverride, out framebuffer))
+                return framebuffer;
+
+            framebuffer = GL.GenFramebuffer();
+            GL.CheckGLError();
+            GL.BindFramebuffer(FramebufferTarget.Framebuffer, framebuffer);
+            GL.CheckGLError();
+            GL.FramebufferRenderbuffer(FramebufferTarget.Framebuffer, FramebufferAttachment.DepthAttachment, RenderbufferTarget.Renderbuffer, renderTargetGL.GLDepthBuffer);
+            GL.CheckGLError();
+            GL.FramebufferRenderbuffer(FramebufferTarget.Framebuffer, FramebufferAttachment.StencilAttachment, RenderbufferTarget.Renderbuffer, renderTargetGL.GLStencilBuffer);
+            GL.CheckGLError();
+            GL.FramebufferTexture2DMultiSampleOnTile(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0, TextureTarget.Texture2D, info.ColorOverride, 0, info.Samples);
+            GL.CheckGLError();
+            FramebufferErrorCode status = GL.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+            Console.WriteLine("[KNISB] On-tile override framebuffer {0} for texture {1}: {2}", framebuffer, info.ColorOverride, status);
+            if (status != FramebufferErrorCode.FramebufferComplete)
+            {
+                GL.DeleteFramebuffer(framebuffer);
+                info.ColorOverride = 0;
+                return 0;
+            }
+            info.OverrideFramebuffers.Add(info.ColorOverride, framebuffer);
+            return framebuffer;
+        }
+    }
+#endif
 }

@@ -84,7 +84,7 @@ namespace Microsoft.Xna.Platform.XR
 
                     bool wasActive = _isActive;
                     _isActive = (handJointLocations.IsActive == 1);
-                    System.Diagnostics.Trace.WriteLine($"[KNISB] Hand {_handIndex} IsActive={_isActive} (raw={handJointLocations.IsActive})");
+                    // (A per-frame IsActive line was logged here: two lines a frame, ~140 a second, in Release builds.)
                     if (wasActive != _isActive)
                     {
                         System.Diagnostics.Trace.WriteLine($"[KNISB] Hand {_handIndex} IsActive CHANGED: {wasActive} -> {_isActive}");

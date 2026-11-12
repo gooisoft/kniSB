@@ -859,9 +859,19 @@ namespace Microsoft.Xna.Platform.Graphics
 
         public override void DrawIndexedPrimitives(PrimitiveType primitiveType, int baseVertex, int startIndex, int primitiveCount)
         {
+#if OCULUS
+            long t0 = DrawTimings.Enabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+#endif
             PlatformApplyState();
             PlatformApplyIndexBuffer();
+#if OCULUS
+            long t1 = DrawTimings.Enabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+#endif
             PlatformApplyShaders();
+#if OCULUS
+            long t2 = DrawTimings.Enabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+            long t3 = 0;
+#endif
 
             DrawElementsType indexElementType = ((IPlatformIndexBuffer)Indices).Strategy.ToConcrete<ConcreteIndexBuffer>().DrawElementsType;
             IntPtr indexOffsetInBytes = (IntPtr)(startIndex * ((IPlatformIndexBuffer)Indices).Strategy.ElementSizeInBytes);
@@ -871,6 +881,9 @@ namespace Microsoft.Xna.Platform.Graphics
             if (((ConcreteGraphicsCapabilities)this.Capabilities).SupportsBaseVertex)
             {
                 PlatformApplyVertexBuffers(0);
+#if OCULUS
+                if (DrawTimings.Enabled) t3 = System.Diagnostics.Stopwatch.GetTimestamp();
+#endif
 
                 GL.DrawElementsBaseVertex(target,
                                   indexElementCount,
@@ -882,6 +895,9 @@ namespace Microsoft.Xna.Platform.Graphics
             else
             {
                 PlatformApplyVertexBuffers(baseVertex);
+#if OCULUS
+                if (DrawTimings.Enabled) t3 = System.Diagnostics.Stopwatch.GetTimestamp();
+#endif
 
                 GL.DrawElements(target,
                                 indexElementCount,
@@ -892,13 +908,34 @@ namespace Microsoft.Xna.Platform.Graphics
 
             base.Metrics_AddDrawCount();
             base.Metrics_AddPrimitiveCount(primitiveCount);
+#if OCULUS
+            if (DrawTimings.Enabled)
+            {
+                long t4 = System.Diagnostics.Stopwatch.GetTimestamp();
+                DrawTimings.State += t1 - t0;
+                DrawTimings.Shaders += t2 - t1;
+                DrawTimings.Vertex += t3 - t2;
+                DrawTimings.Draw += t4 - t3;
+                DrawTimings.Calls++;
+            }
+#endif
         }
 
         public override void DrawIndexedPrimitives(PrimitiveType primitiveType, int baseVertex, int minVertexIndex, int numVertices, int startIndex, int primitiveCount)
         {
+#if OCULUS
+            long t0 = DrawTimings.Enabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+#endif
             PlatformApplyState();
             PlatformApplyIndexBuffer();
+#if OCULUS
+            long t1 = DrawTimings.Enabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+#endif
             PlatformApplyShaders();
+#if OCULUS
+            long t2 = DrawTimings.Enabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+            long t3 = 0;
+#endif
 
             DrawElementsType indexElementType = ((IPlatformIndexBuffer)Indices).Strategy.ToConcrete<ConcreteIndexBuffer>().DrawElementsType;
             IntPtr indexOffsetInBytes = (IntPtr)(startIndex * ((IPlatformIndexBuffer)Indices).Strategy.ElementSizeInBytes);
@@ -908,6 +945,9 @@ namespace Microsoft.Xna.Platform.Graphics
             if (baseVertex > 0 && ((ConcreteGraphicsCapabilities)this.Capabilities).SupportsBaseVertex)
             {
                 PlatformApplyVertexBuffers(0);
+#if OCULUS
+                if (DrawTimings.Enabled) t3 = System.Diagnostics.Stopwatch.GetTimestamp();
+#endif
 
                 GL.DrawRangeElementsBaseVertex(target,
                                   minVertexIndex,
@@ -921,6 +961,9 @@ namespace Microsoft.Xna.Platform.Graphics
             else if (((ConcreteGraphicsCapabilities)this.Capabilities).SupportsDrawRangeElements)
             {
                 PlatformApplyVertexBuffers(baseVertex);
+#if OCULUS
+                if (DrawTimings.Enabled) t3 = System.Diagnostics.Stopwatch.GetTimestamp();
+#endif
 
                 GL.DrawRangeElements(target,
                                 minVertexIndex,
@@ -933,6 +976,9 @@ namespace Microsoft.Xna.Platform.Graphics
             else
             {
                 PlatformApplyVertexBuffers(baseVertex);
+#if OCULUS
+                if (DrawTimings.Enabled) t3 = System.Diagnostics.Stopwatch.GetTimestamp();
+#endif
 
                 GL.DrawElements(target,
                                 indexElementCount,
@@ -943,6 +989,17 @@ namespace Microsoft.Xna.Platform.Graphics
 
             base.Metrics_AddDrawCount();
             base.Metrics_AddPrimitiveCount(primitiveCount);
+#if OCULUS
+            if (DrawTimings.Enabled)
+            {
+                long t4 = System.Diagnostics.Stopwatch.GetTimestamp();
+                DrawTimings.State += t1 - t0;
+                DrawTimings.Shaders += t2 - t1;
+                DrawTimings.Vertex += t3 - t2;
+                DrawTimings.Draw += t4 - t3;
+                DrawTimings.Calls++;
+            }
+#endif
         }
 
         public override void DrawInstancedPrimitives(PrimitiveType primitiveType, int baseVertex, int startIndex, int primitiveCount, int baseInstance, int instanceCount)
@@ -1232,6 +1289,22 @@ namespace Microsoft.Xna.Platform.Graphics
 
             RenderTargetBinding renderTargetBinding = base.CurrentRenderTargetBindings[0];
             IRenderTarget renderTarget = renderTargetBinding.RenderTarget as IRenderTarget;
+#if OCULUS
+            if (renderTarget.MultiSampleCount > 0
+            &&  OnTileMultisample.SamplesOf(((IPlatformTexture)renderTargetBinding.RenderTarget).GetTextureStrategy<ITextureStrategy>() as IRenderTargetStrategyGL) > 0)
+            {
+                // On-tile: the samples are resolved into the texture as the tile is written out, so there is nothing to
+                // blit. Only tell the driver the depth and stencil need not be written out at all.
+                if (renderTarget.RenderTargetUsage == RenderTargetUsage.DiscardContents
+                &&  this._supportsInvalidateFramebuffer)
+                {
+                    GL.InvalidateFramebuffer(FramebufferTarget.Framebuffer,
+                        InvalidateFramebufferAttachements.Length, InvalidateFramebufferAttachements);
+                    GL.CheckGLError();
+                }
+            }
+            else
+#endif
             if (renderTarget.MultiSampleCount > 0)
             {
                 int glResolveFramebuffer = 0;
@@ -1362,6 +1435,17 @@ namespace Microsoft.Xna.Platform.Graphics
                     renderTargetGL = ((IPlatformTexture)renderTargetBinding.RenderTarget).GetTextureStrategy<ITextureStrategy>() as IRenderTargetStrategyGL;
                     FramebufferAttachment attachement = (FramebufferAttachment.ColorAttachment0 + i);
 
+#if OCULUS
+                    int onTileSamples = OnTileMultisample.SamplesOf(renderTargetGL);
+                    if (onTileSamples > 0)
+                    {
+                        // Multisampled on the tile, resolved into the texture when the tile is written out.
+                        TextureTarget target = renderTargetGL.GetFramebufferTarget(renderTargetBinding.ArraySlice);
+                        GL.FramebufferTexture2DMultiSampleOnTile(FramebufferTarget.Framebuffer, attachement, target, renderTargetGL.GLTexture, 0, onTileSamples);
+                        GL.CheckGLError();
+                    }
+                    else
+#endif
                     if (renderTargetGL.GLColorBuffer != 0)
                     {
                         GL.FramebufferRenderbuffer(FramebufferTarget.Framebuffer, attachement, RenderbufferTarget.Renderbuffer, renderTargetGL.GLColorBuffer);
@@ -1384,6 +1468,20 @@ namespace Microsoft.Xna.Platform.Graphics
                 GL.BindFramebuffer(FramebufferTarget.Framebuffer, glFramebuffer);
                 GL.CheckGLError();
             }
+
+#if OCULUS
+            // An on-tile target pointed at another texture for now (the XR device's swapchain image): draw into that.
+            if (base.RenderTargetCount == 1)
+            {
+                IRenderTargetStrategyGL renderTargetGL0 = ((IPlatformTexture)base.CurrentRenderTargetBindings[0].RenderTarget).GetTextureStrategy<ITextureStrategy>() as IRenderTargetStrategyGL;
+                int overrideFramebuffer = OnTileMultisample.OverrideFramebufferOf(renderTargetGL0, GL);
+                if (overrideFramebuffer != 0)
+                {
+                    GL.BindFramebuffer(FramebufferTarget.Framebuffer, overrideFramebuffer);
+                    GL.CheckGLError();
+                }
+            }
+#endif
 
 #if DESKTOPGL
             GL.DrawBuffers(base.RenderTargetCount, this.ToConcrete<ConcreteGraphicsContext>()._drawBuffers);
@@ -1522,4 +1620,16 @@ namespace Microsoft.Xna.Platform.Graphics
         {
         }
     }
+
+#if OCULUS
+    /// <summary>
+    /// CPU time inside DrawIndexedPrimitives, split by phase, in Stopwatch ticks, for the Quest frame-rate bench.
+    /// Off unless Enabled; the app reads and logs the running totals.
+    /// </summary>
+    public static class DrawTimings
+    {
+        public static bool Enabled;
+        public static long State, Shaders, Vertex, Draw, Calls;
+    }
+#endif
 }

@@ -47,6 +47,13 @@ namespace Microsoft.Xna.Platform.XR
         int _CpuLevel;
         int _GpuLevel;
 
+        // Eyes rendered straight into the swapchain images (on-tile MSAA, no per-eye copy; foveation applies),
+        // flipped back at composition by XR_FB_composition_layer_image_layout. Off = render to the eye render
+        // target and blit it into the swapchain image with a y-flip (the original path). debug.ts.direct.
+        bool _hasImageLayoutFlip;
+        bool _directEyeRender;
+        unsafe CompositionLayerImageLayoutFB* _imageLayoutFlip;
+
         float[] _SupportedDisplayRefreshRates;
         uint _RequestedDisplayRefreshRateIndex;
         uint _NumSupportedDisplayRefreshRates;
@@ -619,12 +626,52 @@ namespace Microsoft.Xna.Platform.XR
             yield return XREye.Right;
         }
 
+        /// <summary>Reads an integer Android system property (settable with adb shell setprop); def if unset.</summary>
+        internal static int BenchProp(string name, int def)
+        {
+            try
+            {
+                using (Java.Lang.Class cls = Java.Lang.Class.ForName("android.os.SystemProperties"))
+                using (Java.Lang.Reflect.Method get = cls.GetMethod("get", Java.Lang.Class.FromType(typeof(Java.Lang.String))))
+                {
+                    string v = get.Invoke(null, new Java.Lang.String(name))?.ToString();
+                    int i;
+                    return int.TryParse(v, out i) ? i : def;
+                }
+            }
+            catch (Exception)
+            {
+                return def;
+            }
+        }
+
         public override RenderTarget2D GetEyeRenderTarget(XREye eye)
         {
             int eyeIndex = (int)eye - 1;
             RenderTarget2D rt = _Renderer.FrameBuffer[eyeIndex].RenderTarget;
+
+            if (_directEyeRender)
+            {
+                // Acquire this eye's swapchain image now and point the eye target at it, so the eye is drawn straight
+                // into it (CommitRenderTarget then only releases it).
+                ovrRenderer_RenderFrame_Acquire(ref _Renderer.FrameBuffer[eyeIndex]);
+                uint textureIndex = _Renderer.FrameBuffer[eyeIndex].TextureSwapChainIndex;
+                int swapchainTexture = (int)_Renderer.FrameBuffer[eyeIndex].ColorSwapChainImage[textureIndex].Image;
+                // Store the values as rendered, as the blit did (no linear-to-sRGB conversion on write).
+                Android.Opengl.GLES30.GlDisable(FRAMEBUFFER_SRGB);
+                if (!Microsoft.Xna.Platform.Graphics.OnTileMultisample.SetColorOverride(rt, swapchainTexture))
+                {
+                    // Not an on-tile target after all: fall back to the blit path for good. The image stays acquired;
+                    // CommitRenderTarget sees _directEyeRender is false and blits into it without acquiring again.
+                    Console.WriteLine("[XRBENCH] direct eye render unavailable (eye target not on-tile); using the blit");
+                    _directEyeRender = false;
+                    _directFallbackAcquired[eyeIndex] = true;
+                }
+            }
             return rt;
         }
+
+        bool[] _directFallbackAcquired = new bool[2];
 
         public override Matrix CreateProjection(XREye eye, float znear, float zfar)
         {
@@ -649,7 +696,18 @@ namespace Microsoft.Xna.Platform.XR
             GraphicsDevice device = this._graphics.GraphicsDevice;
             device.SetRenderTarget(null);
 
-            ovrRenderer_RenderFrame_Acquire(ref _Renderer.FrameBuffer[eyeIndex]);
+            if (_directEyeRender)
+            {
+                // Drawn straight into the swapchain image acquired in GetEyeRenderTarget: nothing to copy.
+                Microsoft.Xna.Platform.Graphics.OnTileMultisample.SetColorOverride(rt, 0);
+                ovrRenderer_RenderFrame_Release(ref _Renderer, eyeIndex);
+                return;
+            }
+
+            if (_directFallbackAcquired[eyeIndex])
+                _directFallbackAcquired[eyeIndex] = false;   // acquired already, in GetEyeRenderTarget
+            else
+                ovrRenderer_RenderFrame_Acquire(ref _Renderer.FrameBuffer[eyeIndex]);
 
             uint textureIndex = _Renderer.FrameBuffer[eyeIndex].TextureSwapChainIndex;
 
@@ -754,6 +812,19 @@ namespace Microsoft.Xna.Platform.XR
                     projection_layer.Space = currentSpace.Space;
                     projection_layer.ViewCount = ovrMaxNumEyes;
                     projection_layer.Views = pprojection_layer_elements;
+
+                    if (_directEyeRender)
+                    {
+                        // The eyes were drawn straight into the swapchain images with the offscreen y-flip; the
+                        // compositor flips them back. Unmanaged so the pointer stays valid until xrEndFrame.
+                        if (_imageLayoutFlip == null)
+                        {
+                            _imageLayoutFlip = (CompositionLayerImageLayoutFB*)Marshal.AllocHGlobal(sizeof(CompositionLayerImageLayoutFB));
+                            *_imageLayoutFlip = new CompositionLayerImageLayoutFB(StructureType.CompositionLayerImageLayoutFB);
+                            _imageLayoutFlip->Flags = CompositionLayerImageLayoutFlagsFB.VerticalFlipBitFB;
+                        }
+                        projection_layer.Next = _imageLayoutFlip;
+                    }
 
                     for (int eye = 0; eye < ovrMaxNumEyes; eye++)
                     {
@@ -918,6 +989,14 @@ namespace Microsoft.Xna.Platform.XR
 
             if (this.SessionMode == XRSessionMode.AR)
                 requiredExtensionNames.Add(nameof(OxrExtensions.XR_FB_passthrough));
+
+            // Image layout (vertical flip at composition) — lets the eyes render straight into the swapchain images,
+            // which the offscreen y-flip would otherwise leave upside down. Only request if available.
+            _hasImageLayoutFlip = _extensions.Contains("XR_FB_composition_layer_image_layout");
+            if (_hasImageLayoutFlip)
+                requiredExtensionNames.Add("XR_FB_composition_layer_image_layout");
+            else
+                Trace.WriteLine("[KNISB] Optional extension not available: XR_FB_composition_layer_image_layout");
 
             // Environment depth extension — only request if available
             if (_extensions.Contains("XR_META_environment_depth"))
@@ -1639,9 +1718,13 @@ namespace Microsoft.Xna.Platform.XR
                         );
                 }
 
+                // Foveation only affects what is drawn INTO the swapchain images, i.e. the direct eye path; the blit
+                // path copies at full detail. Bench switch debug.ts.fov: 0 none, 1 low, 2 medium, 3 high (default).
+                FoveationLevelFB foveationLevel = (FoveationLevelFB)Math.Max(0, Math.Min(3, BenchProp("debug.ts.fov", 3)));
+                Console.WriteLine("[XRBENCH] foveation level {0}", foveationLevel);
                 ovrRenderer_SetFoveation(
                     ref _Renderer,
-                    FoveationLevelFB.HighFB,
+                    foveationLevel,
                     0,
                     FoveationDynamicFB.DisabledFB
                     );
@@ -1737,14 +1820,33 @@ namespace Microsoft.Xna.Platform.XR
                 Debug.Assert(xrResult == Result.Success, "EnumerateSwapchainImages");
             }
 
-            frameBuffer.RenderTarget = new RenderTarget2D(_graphics.GraphicsDevice,
-                        width, height,
-                        false, SurfaceFormat.Color,
-                        DepthFormat.Depth24Stencil8,
-                        4,
-                        RenderTargetUsage.DiscardContents,
-                        true
-                        );
+            // Bench switches (adb shell setprop debug.ts.msaa / debug.ts.eyepct), read once at start.
+            int benchMsaa = BenchProp("debug.ts.msaa", 4);
+            int benchEyePct = BenchProp("debug.ts.eyepct", 100);
+            // The eye targets multisample on the GPU tile (no multisampled buffer in memory, no blit resolve);
+            // debug.ts.ontile=0 restores the multisampled-renderbuffer path for comparison.
+            bool onTile = BenchProp("debug.ts.ontile", 1) == 1;
+            // Straight into the swapchain needs the on-tile target, the same size as the swapchain image, and the
+            // composition flip.
+            _directEyeRender = BenchProp("debug.ts.direct", 0) == 1 && onTile && benchMsaa > 1 && benchEyePct == 100
+                               && _hasImageLayoutFlip;
+            Console.WriteLine("[XRBENCH] eye rt {0}x{1} swapchain, msaa={2}, eyepct={3}, ontile={4}, direct={5}", width, height, benchMsaa, benchEyePct, onTile, _directEyeRender);
+            Microsoft.Xna.Platform.Graphics.OnTileMultisample.Enabled = onTile;
+            try
+            {
+                frameBuffer.RenderTarget = new RenderTarget2D(_graphics.GraphicsDevice,
+                            width * benchEyePct / 100, height * benchEyePct / 100,
+                            false, SurfaceFormat.Color,
+                            DepthFormat.Depth24Stencil8,
+                            benchMsaa,
+                            RenderTargetUsage.DiscardContents,
+                            true
+                            );
+            }
+            finally
+            {
+                Microsoft.Xna.Platform.Graphics.OnTileMultisample.Enabled = false;
+            }
 
             frameBuffer.FrameBuffers = new int[frameBuffer.TextureSwapChainLength];
 
@@ -3030,6 +3132,10 @@ namespace Microsoft.Xna.Platform.XR
             // Set session state once we have entered VR mode and have a valid session object.
             if (_SessionActive)
             {
+                // Bench switches: debug.ts.cpulvl / debug.ts.gpulvl, 0 power-saving .. 3 boost.
+                _CpuLevel = BenchProp("debug.ts.cpulvl", _CpuLevel);
+                _GpuLevel = BenchProp("debug.ts.gpulvl", _GpuLevel);
+
                 PerfSettingsLevelEXT cpuPerfLevel = PerfSettingsLevelEXT.SustainedHighExt;
                 switch (_CpuLevel)
                 {
@@ -3078,9 +3184,13 @@ namespace Microsoft.Xna.Platform.XR
                 xrResult = pfnPerfSettingsSetPerformanceLevelEXT(
                     _oxrSession.Session, PerfSettingsDomainEXT.CpuExt, cpuPerfLevel);
                 Debug.Assert(xrResult == Result.Success, "pfnPerfSettingsSetPerformanceLevelEXT");
+                Result cpuResult = xrResult;
                 xrResult = pfnPerfSettingsSetPerformanceLevelEXT(
                     _oxrSession.Session, PerfSettingsDomainEXT.GpuExt, gpuPerfLevel);
                 Debug.Assert(xrResult == Result.Success, "pfnPerfSettingsSetPerformanceLevelEXT");
+                // Debug.Assert is compiled out of Release builds; say what the runtime answered.
+                Console.WriteLine("[XRBENCH] performance levels requested: cpu {0} -> {1}, gpu {2} -> {3}",
+                    cpuPerfLevel, cpuResult, gpuPerfLevel, xrResult);
             }
         }
 

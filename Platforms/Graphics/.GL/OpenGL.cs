@@ -889,6 +889,12 @@ namespace Microsoft.Xna.Platform.Graphics.OpenGL
             TextureTarget textureTarget, int texture, int level, int samples);
         internal FramebufferTexture2DMultiSampleDelegate FramebufferTexture2DMultiSample;
 
+        // GL_EXT_multisampled_render_to_texture, loaded even when the core multisample functions exist: the core path
+        // keeps every sample in memory and resolves with a blit, which on a tiled GPU (the Quest) costs a full
+        // multisampled store per frame. Used only for render targets registered in OnTileMultisample (OCULUS builds).
+        internal RenderbufferStorageMultisampleDelegate RenderbufferStorageMultisampleOnTile;
+        internal FramebufferTexture2DMultiSampleDelegate FramebufferTexture2DMultiSampleOnTile;
+
         [System.Security.SuppressUnmanagedCodeSecurity()]
         [UnmanagedFunctionPointer(callingConvention)]
         [MonoNativeFunctionWrapper]
@@ -1717,6 +1723,14 @@ namespace Microsoft.Xna.Platform.Graphics.OpenGL
                     BlitFramebuffer = LoadFunctionOrNull<OGL.BlitFramebufferDelegate>("glBlitFramebufferNV");
                 }
             }
+
+#if OCULUS
+            if (Extensions.Contains("GL_EXT_multisampled_render_to_texture"))
+            {
+                RenderbufferStorageMultisampleOnTile = LoadFunctionOrNull<OGL.RenderbufferStorageMultisampleDelegate>("glRenderbufferStorageMultisampleEXT");
+                FramebufferTexture2DMultiSampleOnTile = LoadFunctionOrNull<OGL.FramebufferTexture2DMultiSampleDelegate>("glFramebufferTexture2DMultisampleEXT");
+            }
+#endif
 
             if (BlendFuncSeparatei == null && Extensions.Contains("GL_ARB_draw_buffers_blend"))
                 BlendFuncSeparatei = LoadFunctionOrNull<OGL.BlendFuncSeparateiDelegate>("BlendFuncSeparateiARB");
