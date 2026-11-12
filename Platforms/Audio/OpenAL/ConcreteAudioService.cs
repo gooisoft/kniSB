@@ -371,34 +371,43 @@ namespace Microsoft.Xna.Platform.Audio
             {
             }
 
-            if (ReverbEffect != 0)
+            try
             {
-                OpenAL.Efx.DeleteAuxiliaryEffectSlot(ReverbSlot);
-                OpenAL.Efx.DeleteEffect((int)ReverbEffect);
-            }
+                if (ReverbEffect != 0)
+                {
+                    OpenAL.Efx.DeleteAuxiliaryEffectSlot(ReverbSlot);
+                    OpenAL.Efx.DeleteEffect((int)ReverbEffect);
+                }
 
-            while (_alSourcesPool.Count > 0)
-            {
-                OpenAL.DeleteSource(_alSourcesPool.Pop());
-                OpenAL.CheckError("Failed to delete source.");
-            }
+                while (_alSourcesPool != null && _alSourcesPool.Count > 0)
+                {
+                    OpenAL.DeleteSource(_alSourcesPool.Pop());
+                    OpenAL.CheckError("Failed to delete source.");
+                }
 
-            if (Filter != 0 && OpenAL.Efx.IsInitialized)
-            {
-                OpenAL.Efx.DeleteFilter(Filter);
-            }
-            
-            // CleanUpOpenAL
-            OpenAL.ALC.MakeContextCurrent(NullContext);
+                if (Filter != 0 && OpenAL.Efx.IsInitialized)
+                {
+                    OpenAL.Efx.DeleteFilter(Filter);
+                }
 
-            if (_context != NullContext)
-            {
-                OpenAL.ALC.DestroyContext(_context);
-            }
+                // CleanUpOpenAL
+                OpenAL.ALC.MakeContextCurrent(NullContext);
 
-            if (_device != IntPtr.Zero)
+                if (_context != NullContext)
+                {
+                    OpenAL.ALC.DestroyContext(_context);
+                }
+
+                if (_device != IntPtr.Zero)
+                {
+                    OpenAL.ALC.CloseDevice(_device);
+                }
+            }
+            catch (Exception) when (!disposing)
             {
-                OpenAL.ALC.CloseDevice(_device);
+                // From the finalizer: an exception here aborts the whole process. Seen on the Quest 2026-11-12, a
+                // NullReferenceException finalizing a half-made audio service when the app started without focus
+                // (a system panel in front) and reset its device. Leaking the native handles beats crashing.
             }
 
             _context = NullContext;

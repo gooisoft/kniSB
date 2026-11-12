@@ -243,6 +243,13 @@ namespace Microsoft.Xna.Platform.Audio
 
         private void DeleteBuffer()
         {
+            if (!_isBufferDisposed && _audioService == null)
+            {
+                // Never had (or already lost) its audio service: nothing to delete.
+                _isBufferDisposed = true;
+                _bufferId = 0;
+            }
+
             if (!_isBufferDisposed)
             {
                 ConcreteAudioService concreteAudioService = ((IPlatformAudioService)_audioService).Strategy.ToConcrete<ConcreteAudioService>();
@@ -276,7 +283,15 @@ namespace Microsoft.Xna.Platform.Audio
 
             }
 
-            DeleteBuffer();
+            try
+            {
+                DeleteBuffer();
+            }
+            catch (Exception) when (!disposing)
+            {
+                // From the finalizer: an exception here aborts the process (Quest 2026-11-12, finalizing sound effects
+                // after the device-reset content reload, when OpenAL was already gone). Leaking the buffer beats crashing.
+            }
         }
 
 #endregion
