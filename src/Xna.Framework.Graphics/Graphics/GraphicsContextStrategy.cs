@@ -474,6 +474,7 @@ namespace Microsoft.Xna.Platform.Graphics
 
                 renderTargetWidth = renderTarget.Width;
                 renderTargetHeight = renderTarget.Height;
+                PlatformLogicalRenderTargetSize(renderTarget, ref renderTargetWidth, ref renderTargetHeight);
 
                 if (renderTargets.Length == 0)
                     unchecked { _graphicsMetrics._targetCount++; }
@@ -577,6 +578,12 @@ namespace Microsoft.Xna.Platform.Graphics
         protected abstract void PlatformResolveRenderTargets();
         protected abstract void PlatformApplyDefaultRenderTarget();
         protected abstract IRenderTarget PlatformApplyRenderTargets();
+
+        /// <summary>The size the viewport and scissor start at for a newly bound render target: its own size, unless
+        /// the platform draws it smaller than its users lay out for (Oculus: the 2D panel).</summary>
+        protected virtual void PlatformLogicalRenderTargetSize(IRenderTarget renderTarget, ref int width, ref int height)
+        {
+        }
 
         protected GraphicsDebug CreateGraphicsDebug()
         {

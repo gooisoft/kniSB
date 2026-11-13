@@ -652,6 +652,34 @@ namespace Microsoft.Xna.Platform.Graphics
 
 #if OCULUS
     /// <summary>
+    /// One render target drawn at a smaller size than the code drawing into it lays out for (the Quest's 2D panel: laid
+    /// out at 4096 x 2304, stored smaller). While it is bound the viewport and scissor are in LOGICAL units (so
+    /// SpriteBatch, clip rectangles and hit tests see the logical size) and are scaled to the texture when sent to GL.
+    /// Whoever samples the texture must use its real size.
+    /// </summary>
+    public static class ScaledRenderTarget
+    {
+        public static Texture Target { get; private set; }
+        public static int LogicalWidth { get; private set; }
+        public static int LogicalHeight { get; private set; }
+        internal static float ScaleX = 1f, ScaleY = 1f;
+
+        public static void Set(RenderTarget2D target, int logicalWidth, int logicalHeight)
+        {
+            Target = target;
+            LogicalWidth = logicalWidth;
+            LogicalHeight = logicalHeight;
+            ScaleX = target != null ? target.Width / (float)logicalWidth : 1f;
+            ScaleY = target != null ? target.Height / (float)logicalHeight : 1f;
+        }
+
+        internal static bool Is(object renderTarget)
+        {
+            return renderTarget != null && ReferenceEquals(renderTarget, Target) && (ScaleX != 1f || ScaleY != 1f);
+        }
+    }
+
+    /// <summary>
     /// Multiview (GL_OVR_multiview2): the eye target is the swapchain's 2-layer image and each draw reaches both eyes.
     /// The app draws once, as the left eye; every vertex shader's multiview variant ends with
     /// gl_Position = mv_eye[gl_ViewID_OVR] * gl_Position (before posFixup), where view 0 is the identity and view 1 is

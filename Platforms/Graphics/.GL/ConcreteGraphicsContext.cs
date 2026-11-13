@@ -274,6 +274,19 @@ namespace Microsoft.Xna.Platform.Graphics
 
         private void PlatformApplyScissorRectangle()
         {
+#if OCULUS
+            if (this.FramebufferRequireFlippedY && ScaledRenderTarget.Is(CurrentRenderTargetBindings[0].RenderTarget))
+            {
+                // Logical units -> the smaller texture; widen to whole pixels so nothing at an edge is cut.
+                int x0 = (int)Math.Floor(_scissorRectangle.X * ScaledRenderTarget.ScaleX);
+                int y0 = (int)Math.Floor(_scissorRectangle.Y * ScaledRenderTarget.ScaleY);
+                int x1 = (int)Math.Ceiling((_scissorRectangle.X + _scissorRectangle.Width) * ScaledRenderTarget.ScaleX);
+                int y1 = (int)Math.Ceiling((_scissorRectangle.Y + _scissorRectangle.Height) * ScaledRenderTarget.ScaleY);
+                GL.Scissor(x0, y0, x1 - x0, y1 - y0);
+                GL.CheckGLError();
+            }
+            else
+#endif
             if (this.FramebufferRequireFlippedY)
             {
                 GL.Scissor(_scissorRectangle.X, _scissorRectangle.Y, _scissorRectangle.Width, _scissorRectangle.Height);
@@ -297,6 +310,17 @@ namespace Microsoft.Xna.Platform.Graphics
 
         internal void PlatformApplyViewport()
         {
+#if OCULUS
+            if (this.FramebufferRequireFlippedY && ScaledRenderTarget.Is(CurrentRenderTargetBindings[0].RenderTarget))
+            {
+                GL.Viewport((int)Math.Round(_viewport.X * ScaledRenderTarget.ScaleX),
+                            (int)Math.Round(_viewport.Y * ScaledRenderTarget.ScaleY),
+                            (int)Math.Round(_viewport.Width * ScaledRenderTarget.ScaleX),
+                            (int)Math.Round(_viewport.Height * ScaledRenderTarget.ScaleY));
+                GL.LogGLError("GraphicsDevice.Viewport_set() GL.Viewport");
+            }
+            else
+#endif
             if (this.FramebufferRequireFlippedY)
             {
                 GL.Viewport(_viewport.X, _viewport.Y, _viewport.Width, _viewport.Height);
@@ -1500,6 +1524,20 @@ namespace Microsoft.Xna.Platform.Graphics
             // Textures will need to be rebound to render correctly in the new render target.
             ((IPlatformTextureCollection)this.Textures).Strategy.Dirty();
         }
+
+#if OCULUS
+        protected override void PlatformLogicalRenderTargetSize(IRenderTarget renderTarget, ref int width, ref int height)
+        {
+            if (ScaledRenderTarget.Is(renderTarget))
+            {
+                width = ScaledRenderTarget.LogicalWidth;
+                height = ScaledRenderTarget.LogicalHeight;
+            }
+            // The GL scissor depends on the bound target as well as on the rectangle (scaled or not), and the rectangle
+            // is only re-sent when it changes: re-send it after every switch.
+            _scissorRectangleDirty = true;
+        }
+#endif
 
         protected override IRenderTarget PlatformApplyRenderTargets()
         {
