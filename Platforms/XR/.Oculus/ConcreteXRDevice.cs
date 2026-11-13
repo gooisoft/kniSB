@@ -659,6 +659,9 @@ namespace Microsoft.Xna.Platform.XR
                 ovrRenderer_RenderFrame_Acquire(ref _Renderer.FrameBuffer[eyeIndex]);
                 uint textureIndex = _Renderer.FrameBuffer[eyeIndex].TextureSwapChainIndex;
                 int swapchainTexture = (int)_Renderer.FrameBuffer[eyeIndex].ColorSwapChainImage[textureIndex].Image;
+                Microsoft.Xna.Platform.Graphics.Multiview.Acquires++;
+                Microsoft.Xna.Platform.Graphics.Multiview.LastImageIndex = (int)textureIndex;
+                Microsoft.Xna.Platform.Graphics.Multiview.LastTexture = swapchainTexture;
                 // Store the values as rendered, as the blit did (no linear-to-sRGB conversion on write).
                 Android.Opengl.GLES30.GlDisable(FRAMEBUFFER_SRGB);
                 if (!Microsoft.Xna.Platform.Graphics.OnTileMultisample.SetColorOverride(rt, swapchainTexture, _multiview ? 2 : 1))
@@ -1711,7 +1714,8 @@ namespace Microsoft.Xna.Platform.XR
                 // Multiview: both eyes from one draw into one 2-layer swapchain. Needs the direct path (drawing straight
                 // into the swapchain image) and the GL multiview functions.
                 string glExtensions = Android.Opengl.GLES20.GlGetString(Android.Opengl.GLES20.GlExtensions) ?? "";
-                _multiview = BenchProp("debug.ts.multiview", 0) == 1 && BenchProp("debug.ts.direct", 0) == 1
+                // On by default (2026-11-13: 283-Thort sphere 40 -> 61 fps); debug.ts.multiview=0 turns it off.
+                _multiview = BenchProp("debug.ts.multiview", 1) == 1 && BenchProp("debug.ts.direct", 1) == 1
                              && _hasImageLayoutFlip
                              && glExtensions.Contains("GL_OVR_multiview2")
                              && glExtensions.Contains("GL_OVR_multiview_multisampled_render_to_texture");
@@ -1853,7 +1857,8 @@ namespace Microsoft.Xna.Platform.XR
             bool onTile = BenchProp("debug.ts.ontile", 1) == 1;
             // Straight into the swapchain needs the on-tile target, the same size as the swapchain image, and the
             // composition flip.
-            _directEyeRender = BenchProp("debug.ts.direct", 0) == 1 && onTile && benchMsaa > 1 && benchEyePct == 100
+            // On by default (2026-11-13); debug.ts.direct=0 renders into the eye target and copies to the swapchain.
+            _directEyeRender = BenchProp("debug.ts.direct", 1) == 1 && onTile && benchMsaa > 1 && benchEyePct == 100
                                && _hasImageLayoutFlip;
             Console.WriteLine("[XRBENCH] eye rt {0}x{1} swapchain, msaa={2}, eyepct={3}, ontile={4}, direct={5}", width, height, benchMsaa, benchEyePct, onTile, _directEyeRender);
             Microsoft.Xna.Platform.Graphics.OnTileMultisample.Enabled = onTile;
