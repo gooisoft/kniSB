@@ -1720,6 +1720,7 @@ namespace Microsoft.Xna.Platform.XR
                              && glExtensions.Contains("GL_OVR_multiview2")
                              && glExtensions.Contains("GL_OVR_multiview_multisampled_render_to_texture");
                 Console.WriteLine("[XRBENCH] multiview={0}", _multiview);
+                SpriteBatcher.ExactUpload = BenchProp("debug.ts.sborphan", 0) != 1;
 
                 // Create the frame buffers.
                 for (int eye = 0; eye < ovrMaxNumEyes; eye++)

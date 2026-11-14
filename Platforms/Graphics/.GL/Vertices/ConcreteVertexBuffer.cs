@@ -128,6 +128,33 @@ namespace Microsoft.Xna.Platform.Graphics
             }
         }
 
+#if OCULUS
+        /// <summary>
+        ///     Replaces the buffer's store with exactly <paramref name="sizeInBytes" /> bytes from <paramref name="data" />,
+        ///     orphaning and filling it in one glBufferData sized to what is used (SpriteBatcher on the Quest).
+        /// </summary>
+        internal void ReplaceStore(IntPtr data, int sizeInBytes)
+        {
+            var contextStrategy = ((IPlatformGraphicsContext)base.GraphicsDeviceStrategy.CurrentContext).Strategy;
+            var contextGL = contextStrategy.ToConcrete<ConcreteGraphicsContextGL>();
+            bool isSharedContext = contextGL.BindSharedContext();
+            try
+            {
+                var GL = contextGL.GL;
+                GL.BindBuffer(BufferTarget.ArrayBuffer, GLVertexBuffer);
+                GL.CheckGLError();
+                if (!isSharedContext)
+                    contextStrategy._vertexBuffersDirty = true;
+                GL.BufferData(BufferTarget.ArrayBuffer, (IntPtr)sizeInBytes, data, _usageHint);
+                GL.CheckGLError();
+            }
+            finally
+            {
+                contextGL.UnbindSharedContext();
+            }
+        }
+#endif
+
         protected override void PlatformGraphicsContextLost()
         {
             _vbo = 0;
