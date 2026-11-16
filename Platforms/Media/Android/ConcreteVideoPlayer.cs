@@ -111,9 +111,9 @@ namespace Microsoft.Xna.Platform.Media
             _glVideoSurfaceTexture = GL.GenTexture();
             GL.CheckGLError();
             ((IPlatformTextureCollection)_graphicsDeviceStrategy.MainContext.Textures).Strategy.Dirty(0);
-            GL.ActiveTexture(TextureUnit.Texture0 + 0);
+            GL.FastActiveTexture(TextureUnit.Texture0 + 0);
             GL.CheckGLError();
-            GL.BindTexture((TextureTarget)GL_TEXTURE_EXTERNAL_OES, _glVideoSurfaceTexture);
+            GL.FastBindTexture((TextureTarget)GL_TEXTURE_EXTERNAL_OES, _glVideoSurfaceTexture);
             GL.CheckGLError();
             GL.TexParameter((TextureTarget)GL_TEXTURE_EXTERNAL_OES, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
             GL.CheckGLError();

@@ -2569,7 +2569,7 @@ namespace Microsoft.Xna.Platform.XR
                     //var adapter = ((IPlatformGraphicsAdapter)_graphics.GraphicsDevice.Adapter).Strategy.ToConcrete<ConcreteGraphicsAdapter>();
                     //var GL = adapter.Ogl;
 
-                    //GL.BindTexture(OpenGL.TextureTarget.Texture2D, texId);
+                    //GL.FastBindTexture(OpenGL.TextureTarget.Texture2D, texId);
                     //GL.CheckGLError();
                     //GL.TexSubImage2D(
                     //    OpenGL.TextureTarget.Texture2D,
@@ -2592,7 +2592,7 @@ namespace Microsoft.Xna.Platform.XR
                     //GL.TexParameterfv(OpenGL.TextureTarget.Texture2D, OpenGL.TextureParameterName.TextureBorderColor, pborderColor);
                     //GL.CheckGLError();
 
-                    //GL.BindTexture(OpenGL.TextureTarget.Texture2D, 0);
+                    //GL.FastBindTexture(OpenGL.TextureTarget.Texture2D, 0);
                     //GL.CheckGLError();
 
                 } // free(texData);

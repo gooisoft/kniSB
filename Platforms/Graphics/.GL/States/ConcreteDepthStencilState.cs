@@ -32,13 +32,13 @@ namespace Microsoft.Xna.Platform.Graphics
             {
                 if (!DepthBufferEnable)
                 {
-                    GL.Disable(EnableCap.DepthTest);
+                    GL.FastDisable(EnableCap.DepthTest);
                     GL.CheckGLError();
                 }
                 else
                 {
                     // enable Depth Buffer
-                    GL.Enable(EnableCap.DepthTest);
+                    GL.FastEnable(EnableCap.DepthTest);
                     GL.CheckGLError();
                 }
                 context._lastDepthStencilState.DepthBufferEnable = this.DepthBufferEnable;
@@ -47,7 +47,7 @@ namespace Microsoft.Xna.Platform.Graphics
             if (force || 
                 this.DepthBufferFunction != context._lastDepthStencilState.DepthBufferFunction)
             {
-                GL.DepthFunc(DepthBufferFunction.ToGLComparisonFunction());
+                GL.FastDepthFunc(DepthBufferFunction.ToGLComparisonFunction());
                 GL.CheckGLError();
                 context._lastDepthStencilState.DepthBufferFunction = this.DepthBufferFunction;
             }
@@ -55,7 +55,7 @@ namespace Microsoft.Xna.Platform.Graphics
             if (force || 
                 this.DepthBufferWriteEnable != context._lastDepthStencilState.DepthBufferWriteEnable)
             {
-                GL.DepthMask(DepthBufferWriteEnable);
+                GL.FastDepthMask(DepthBufferWriteEnable);
                 GL.CheckGLError();
                 context._lastDepthStencilState.DepthBufferWriteEnable = this.DepthBufferWriteEnable;
             }
@@ -65,13 +65,13 @@ namespace Microsoft.Xna.Platform.Graphics
             {
                 if (!StencilEnable)
                 {
-                    GL.Disable(EnableCap.StencilTest);
+                    GL.FastDisable(EnableCap.StencilTest);
                     GL.CheckGLError();
                 }
                 else
                 {
                     // enable Stencil
-                    GL.Enable(EnableCap.StencilTest);
+                    GL.FastEnable(EnableCap.StencilTest);
                     GL.CheckGLError();
                 }
                 context._lastDepthStencilState.StencilEnable = this.StencilEnable;

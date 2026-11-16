@@ -35,9 +35,9 @@ namespace Microsoft.Xna.Platform.Graphics
                 blendEnabled != context._lastBlendEnable)
             {
                 if (blendEnabled)
-                    GL.Enable(EnableCap.Blend);
+                    GL.FastEnable(EnableCap.Blend);
                 else
-                    GL.Disable(EnableCap.Blend);
+                    GL.FastDisable(EnableCap.Blend);
                 GL.CheckGLError();
                 context._lastBlendEnable = blendEnabled;
             }
@@ -48,7 +48,7 @@ namespace Microsoft.Xna.Platform.Graphics
                     this.ColorBlendFunction != context._lastBlendState.ColorBlendFunction ||
                     this.AlphaBlendFunction != context._lastBlendState.AlphaBlendFunction)
                 {
-                    GL.BlendEquationSeparate(
+                    GL.FastBlendEquationSeparate(
                         ToGLBlendEquationMode(this.ColorBlendFunction),
                         ToGLBlendEquationMode(this.AlphaBlendFunction));
                     GL.CheckGLError();
@@ -65,7 +65,7 @@ namespace Microsoft.Xna.Platform.Graphics
                     this.AlphaSourceBlend != context._lastBlendState.AlphaSourceBlend ||
                     this.AlphaDestinationBlend != context._lastBlendState.AlphaDestinationBlend)
                 {
-                    GL.BlendFuncSeparate(
+                    GL.FastBlendFuncSeparate(
                         ToGLBlendFunc(this.ColorSourceBlend),
                         ToGLBlendFunc(this.ColorDestinationBlend),
                         ToGLBlendFunc(this.AlphaSourceBlend),
@@ -119,7 +119,7 @@ namespace Microsoft.Xna.Platform.Graphics
             if (force ||
                 this.ColorWriteChannels != context._lastBlendState.ColorWriteChannels)
             {
-                GL.ColorMask(
+                GL.FastColorMask(
                     (this.ColorWriteChannels & ColorWriteChannels.Red) != 0,
                     (this.ColorWriteChannels & ColorWriteChannels.Green) != 0,
                     (this.ColorWriteChannels & ColorWriteChannels.Blue) != 0,

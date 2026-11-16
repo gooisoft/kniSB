@@ -30,7 +30,7 @@ namespace Microsoft.Xna.Platform.Graphics
             if (force)
             {
                 // Turn off dithering to make sure data returned by Texture.GetData is accurate
-                GL.Disable(EnableCap.Dither);
+                GL.FastDisable(EnableCap.Dither);
             }
 
             // When rendering offscreen the faces change order.
@@ -39,31 +39,31 @@ namespace Microsoft.Xna.Platform.Graphics
             switch (CullMode)
             {
                 case CullMode.None:
-                    GL.Disable(EnableCap.CullFace);
+                    GL.FastDisable(EnableCap.CullFace);
                     GL.CheckGLError();
                     break;
 
                 case CullMode.CullClockwiseFace:
-                    GL.Enable(EnableCap.CullFace);
+                    GL.FastEnable(EnableCap.CullFace);
                     GL.CheckGLError();
-                    GL.CullFace(CullFaceMode.Back);
+                    GL.FastCullFace(CullFaceMode.Back);
                     GL.CheckGLError();
                     if (offscreen)
-                        GL.FrontFace(FrontFaceDirection.Cw);
+                        GL.FastFrontFace(FrontFaceDirection.Cw);
                     else
-                        GL.FrontFace(FrontFaceDirection.Ccw);
+                        GL.FastFrontFace(FrontFaceDirection.Ccw);
                     GL.CheckGLError();
                     break;
 
                 case CullMode.CullCounterClockwiseFace:
-                    GL.Enable(EnableCap.CullFace);
+                    GL.FastEnable(EnableCap.CullFace);
                     GL.CheckGLError();
-                    GL.CullFace(CullFaceMode.Back);
+                    GL.FastCullFace(CullFaceMode.Back);
                     GL.CheckGLError();
                     if (offscreen)
-                        GL.FrontFace(FrontFaceDirection.Ccw);
+                        GL.FastFrontFace(FrontFaceDirection.Ccw);
                     else
-                        GL.FrontFace(FrontFaceDirection.Cw);
+                        GL.FastFrontFace(FrontFaceDirection.Cw);
                     GL.CheckGLError();
                     break;
 
@@ -85,9 +85,9 @@ namespace Microsoft.Xna.Platform.Graphics
                 this.ScissorTestEnable != context._lastRasterizerState.ScissorTestEnable)
 			{
 			    if (ScissorTestEnable)
-				    GL.Enable(EnableCap.ScissorTest);
+				    GL.FastEnable(EnableCap.ScissorTest);
 			    else
-				    GL.Disable(EnableCap.ScissorTest);
+				    GL.FastDisable(EnableCap.ScissorTest);
                 GL.CheckGLError();
                 context._lastRasterizerState.ScissorTestEnable = this.ScissorTestEnable;
             }
@@ -124,13 +124,13 @@ namespace Microsoft.Xna.Platform.Graphics
                         default:
                             throw new ArgumentOutOfRangeException();
                     }
-                    GL.Enable(EnableCap.PolygonOffsetFill);
+                    GL.FastEnable(EnableCap.PolygonOffsetFill);
                     GL.PolygonOffset(this.SlopeScaleDepthBias, this.DepthBias * depthMul);
                     GL.CheckGLError();
                 }
                 else
                 {
-                    GL.Disable(EnableCap.PolygonOffsetFill);
+                    GL.FastDisable(EnableCap.PolygonOffsetFill);
                     GL.CheckGLError();
                 }
                 context._lastRasterizerState.DepthBias = this.DepthBias;
@@ -142,9 +142,9 @@ namespace Microsoft.Xna.Platform.Graphics
                  this.DepthClipEnable != context._lastRasterizerState.DepthClipEnable))
             {
                 if (!DepthClipEnable)
-                    GL.Enable(EnableCap.DepthClamp);
+                    GL.FastEnable(EnableCap.DepthClamp);
                 else
-                    GL.Disable(EnableCap.DepthClamp);
+                    GL.FastDisable(EnableCap.DepthClamp);
                 GL.CheckGLError();
                 context._lastRasterizerState.DepthClipEnable = this.DepthClipEnable;
             }

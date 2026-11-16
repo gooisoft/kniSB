@@ -49,7 +49,7 @@ namespace Microsoft.Xna.Platform.Graphics
             _glTexture = _glTextureHandle.ToInt32();
 
             TextureTarget colorTextureTarget = TextureTarget.Texture2D;
-            GL.BindTexture(colorTextureTarget, _glTexture);
+            GL.FastBindTexture(colorTextureTarget, _glTexture);
             GL.CheckGLError();
             GL.TexParameteri(colorTextureTarget, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
             GL.CheckGLError();
@@ -59,7 +59,7 @@ namespace Microsoft.Xna.Platform.Graphics
             GL.CheckGLError();
             GL.TexParameteri(colorTextureTarget, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
             GL.CheckGLError();
-            GL.BindTexture(colorTextureTarget, 0);
+            GL.FastBindTexture(colorTextureTarget, 0);
             GL.CheckGLError();
 
         }

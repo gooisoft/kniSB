@@ -52,7 +52,7 @@ namespace Microsoft.Xna.Platform.Graphics
                 //GLExt.Oes.BindVertexArray(this._vao);
                 this._vbo = GL.GenBuffer();
                 GL.CheckGLError();
-                GL.BindBuffer(BufferTarget.ArrayBuffer, this._vbo);
+                GL.FastBindBuffer(BufferTarget.ArrayBuffer, this._vbo);
                 GL.CheckGLError();
                 if (!isSharedContext)
                     contextStrategy._vertexBuffersDirty = true;
@@ -77,7 +77,7 @@ namespace Microsoft.Xna.Platform.Graphics
 
                 var GL = ((IPlatformGraphicsContext)base.GraphicsDeviceStrategy.CurrentContext).Strategy.ToConcrete<ConcreteGraphicsContextGL>().GL;
 
-                GL.BindBuffer(BufferTarget.ArrayBuffer, GLVertexBuffer);
+                GL.FastBindBuffer(BufferTarget.ArrayBuffer, GLVertexBuffer);
                 GL.CheckGLError();
                 if (!isSharedContext)
                     ((IPlatformGraphicsContext)base.GraphicsDeviceStrategy.CurrentContext).Strategy._vertexBuffersDirty = true;
@@ -141,7 +141,7 @@ namespace Microsoft.Xna.Platform.Graphics
             try
             {
                 var GL = contextGL.GL;
-                GL.BindBuffer(BufferTarget.ArrayBuffer, GLVertexBuffer);
+                GL.FastBindBuffer(BufferTarget.ArrayBuffer, GLVertexBuffer);
                 GL.CheckGLError();
                 if (!isSharedContext)
                     contextStrategy._vertexBuffersDirty = true;

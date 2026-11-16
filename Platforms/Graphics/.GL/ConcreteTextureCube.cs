@@ -59,9 +59,9 @@ namespace Microsoft.Xna.Platform.Graphics
 
                     if (!isSharedContext)
                         ((IPlatformTextureCollection)base.GraphicsDeviceStrategy.CurrentContext.Textures).Strategy.Dirty(0);
-                    GL.ActiveTexture(TextureUnit.Texture0 + 0);
+                    GL.FastActiveTexture(TextureUnit.Texture0 + 0);
                     GL.CheckGLError();
-                    GL.BindTexture(TextureTarget.TextureCubeMap, _glTexture);
+                    GL.FastBindTexture(TextureTarget.TextureCubeMap, _glTexture);
                     GL.CheckGLError();
 
                     TextureTarget target = ConcreteTextureCube.GetGLCubeFace(face);
@@ -104,9 +104,9 @@ namespace Microsoft.Xna.Platform.Graphics
 
                 if (!isSharedContext)
                     ((IPlatformTextureCollection)base.GraphicsDeviceStrategy.CurrentContext.Textures).Strategy.Dirty(0);
-                GL.ActiveTexture(TextureUnit.Texture0 + 0);
+                GL.FastActiveTexture(TextureUnit.Texture0 + 0);
                 GL.CheckGLError();
-                GL.BindTexture(TextureTarget.TextureCubeMap, _glTexture);
+                GL.FastBindTexture(TextureTarget.TextureCubeMap, _glTexture);
 
                 fixed (T* pData = &data[0])
                 {
@@ -243,9 +243,9 @@ namespace Microsoft.Xna.Platform.Graphics
 
                 if (!isSharedContext)
                     ((IPlatformTextureCollection)contextStrategy.Textures).Strategy.Dirty(0);
-                GL.ActiveTexture(TextureUnit.Texture0 + 0);
+                GL.FastActiveTexture(TextureUnit.Texture0 + 0);
                 GL.CheckGLError();
-                GL.BindTexture(TextureTarget.TextureCubeMap, _glTexture);
+                GL.FastBindTexture(TextureTarget.TextureCubeMap, _glTexture);
                 GL.CheckGLError();
 
                 ConcreteTexture.ToGLSurfaceFormat(format, contextStrategy,

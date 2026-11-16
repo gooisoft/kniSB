@@ -70,9 +70,9 @@ namespace Microsoft.Xna.Platform.Graphics
 
                     if (!isSharedContext)
                         ((IPlatformTextureCollection)base.GraphicsDeviceStrategy.CurrentContext.Textures).Strategy.Dirty(0);
-                    GL.ActiveTexture(TextureUnit.Texture0 + 0);
+                    GL.FastActiveTexture(TextureUnit.Texture0 + 0);
                     GL.CheckGLError();
-                    GL.BindTexture(_glTarget, _glTexture);
+                    GL.FastBindTexture(_glTarget, _glTexture);
                     GL.CheckGLError();
 
                     GL.TexSubImage3D(_glTarget, level, left, top, front, width, height, depth, _glFormat, _glType, dataPtr);
@@ -108,9 +108,9 @@ namespace Microsoft.Xna.Platform.Graphics
 
                 if (!isSharedContext)
                     ((IPlatformTextureCollection)contextStrategy.Textures).Strategy.Dirty(0);
-                GL.ActiveTexture(TextureUnit.Texture0 + 0);
+                GL.FastActiveTexture(TextureUnit.Texture0 + 0);
                 GL.CheckGLError();
-                GL.BindTexture(_glTarget, _glTexture);
+                GL.FastBindTexture(_glTarget, _glTexture);
                 GL.CheckGLError();
 
                 ConcreteTexture.ToGLSurfaceFormat(format, contextStrategy,

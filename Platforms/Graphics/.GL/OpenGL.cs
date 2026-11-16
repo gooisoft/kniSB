@@ -22,6 +22,15 @@ using ObjCRuntime;
 
 namespace Microsoft.Xna.Platform.Graphics.OpenGL
 {
+    /// <summary>Quest: GL calls without the GC transition (OGL.Fast*). Enabled = false goes back to the delegates
+    /// (bench switch debug.ts.slowgl=1). The counts are running totals of the calls made each way.</summary>
+    public static class FastGL
+    {
+        public static bool Enabled = true;
+        public static long FastCalls;
+        public static long SlowCalls;
+    }
+
     internal enum BufferAccess
     {
         ReadOnly  = 0x88B8,
@@ -542,6 +551,7 @@ namespace Microsoft.Xna.Platform.Graphics.OpenGL
         {
             GetNativeLibrary();
             LoadEntryPoints();
+            LoadFastEntryPoints();
         }
 
         protected abstract IntPtr GetNativeLibrary();
@@ -1774,7 +1784,7 @@ namespace Microsoft.Xna.Platform.Graphics.OpenGL
         
         internal unsafe void Uniform4(int location, Vector4 value)
         {
-            Uniform4fv(location, 1, &value);
+            FastUniform4fv(location, 1, &value);
         }
 
         internal void Uniform1(int location, float value)
@@ -1804,7 +1814,7 @@ namespace Microsoft.Xna.Platform.Graphics.OpenGL
 
         internal unsafe void Uniform4(int location, int count, Vector4* value)
         {
-            Uniform4fv(location, count, value);
+            FastUniform4fv(location, count, value);
         }
 
         internal unsafe void UniformMatrix2x2(int location, int count, bool transpose, float* value)
@@ -1941,6 +1951,132 @@ namespace Microsoft.Xna.Platform.Graphics.OpenGL
 #endif
             }
         }
+
+        #region Fast calls (Quest)
+        // GL calls made per draw, without Mono's GC transition (Thortspace 2026-11-16). On the Quest a call through a GL
+        // delegate cost ~127 ns, ~9 ns through a function pointer marked SuppressGCTransition (XrCallBench, glGetError):
+        // the transition is nearly all of it, and the main thread makes thousands of these calls a frame.
+        // Only calls that return quickly and never call back into managed code are here: binds, enables, uniforms,
+        // vertex attributes, state and draws. Uploads, reads, waits and object creation keep the transition.
+        // While one of these runs, a garbage collection on another thread waits for it to return (nothing worse).
+        // The pointers are loaded in OCULUS builds only; everywhere else each Fast method calls the delegate as before.
+        // FastGL.Enabled = false (Quest bench switch debug.ts.slowgl=1) also goes back to the delegates.
+
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<TextureTarget, int, void> _fpBindTexture;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<TextureUnit, void> _fpActiveTexture;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<BufferTarget, int, void> _fpBindBuffer;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<EnableCap, void> _fpEnable;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<EnableCap, void> _fpDisable;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<int, int, Vector4*, void> _fpUniform4fv;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<int, int, void> _fpUniform1i;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<int, void> _fpUseProgram;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<int, int, VertexAttribPointerType, byte, int, IntPtr, void> _fpVertexAttribPointer;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<int, void> _fpEnableVertexAttribArray;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<int, void> _fpDisableVertexAttribArray;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<int, int, void> _fpVertexAttribDivisor;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<GLPrimitiveType, int, DrawElementsType, IntPtr, void> _fpDrawElements;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<GLPrimitiveType, int, int, void> _fpDrawArrays;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<byte, void> _fpDepthMask;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<ComparisonFunc, void> _fpDepthFunc;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<FrontFaceDirection, void> _fpFrontFace;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<CullFaceMode, void> _fpCullFace;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<int, int, int, int, void> _fpScissor;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<BlendingFunc, BlendingFunc, BlendingFunc, BlendingFunc, void> _fpBlendFuncSeparate;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<BlendEquationMode, BlendEquationMode, void> _fpBlendEquationSeparate;
+        private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<byte, byte, byte, byte, void> _fpColorMask;
+
+        /// <summary>The address of a GL entry point, or zero where fast calls are not used.</summary>
+        protected virtual IntPtr GetEntryPoint(string function)
+        {
+            return IntPtr.Zero;
+        }
+
+        private unsafe void LoadFastEntryPoints()
+        {
+#if OCULUS
+            _fpBindTexture = (delegate* unmanaged[Cdecl, SuppressGCTransition]<TextureTarget, int, void>)GetEntryPoint("glBindTexture");
+            _fpActiveTexture = (delegate* unmanaged[Cdecl, SuppressGCTransition]<TextureUnit, void>)GetEntryPoint("glActiveTexture");
+            _fpBindBuffer = (delegate* unmanaged[Cdecl, SuppressGCTransition]<BufferTarget, int, void>)GetEntryPoint("glBindBuffer");
+            _fpEnable = (delegate* unmanaged[Cdecl, SuppressGCTransition]<EnableCap, void>)GetEntryPoint("glEnable");
+            _fpDisable = (delegate* unmanaged[Cdecl, SuppressGCTransition]<EnableCap, void>)GetEntryPoint("glDisable");
+            _fpUniform4fv = (delegate* unmanaged[Cdecl, SuppressGCTransition]<int, int, Vector4*, void>)GetEntryPoint("glUniform4fv");
+            _fpUniform1i = (delegate* unmanaged[Cdecl, SuppressGCTransition]<int, int, void>)GetEntryPoint("glUniform1i");
+            _fpUseProgram = (delegate* unmanaged[Cdecl, SuppressGCTransition]<int, void>)GetEntryPoint("glUseProgram");
+            _fpVertexAttribPointer = (delegate* unmanaged[Cdecl, SuppressGCTransition]<int, int, VertexAttribPointerType, byte, int, IntPtr, void>)GetEntryPoint("glVertexAttribPointer");
+            _fpEnableVertexAttribArray = (delegate* unmanaged[Cdecl, SuppressGCTransition]<int, void>)GetEntryPoint("glEnableVertexAttribArray");
+            _fpDisableVertexAttribArray = (delegate* unmanaged[Cdecl, SuppressGCTransition]<int, void>)GetEntryPoint("glDisableVertexAttribArray");
+            _fpVertexAttribDivisor = (delegate* unmanaged[Cdecl, SuppressGCTransition]<int, int, void>)GetEntryPoint("glVertexAttribDivisor");
+            _fpDrawElements = (delegate* unmanaged[Cdecl, SuppressGCTransition]<GLPrimitiveType, int, DrawElementsType, IntPtr, void>)GetEntryPoint("glDrawElements");
+            _fpDrawArrays = (delegate* unmanaged[Cdecl, SuppressGCTransition]<GLPrimitiveType, int, int, void>)GetEntryPoint("glDrawArrays");
+            _fpDepthMask = (delegate* unmanaged[Cdecl, SuppressGCTransition]<byte, void>)GetEntryPoint("glDepthMask");
+            _fpDepthFunc = (delegate* unmanaged[Cdecl, SuppressGCTransition]<ComparisonFunc, void>)GetEntryPoint("glDepthFunc");
+            _fpFrontFace = (delegate* unmanaged[Cdecl, SuppressGCTransition]<FrontFaceDirection, void>)GetEntryPoint("glFrontFace");
+            _fpCullFace = (delegate* unmanaged[Cdecl, SuppressGCTransition]<CullFaceMode, void>)GetEntryPoint("glCullFace");
+            _fpScissor = (delegate* unmanaged[Cdecl, SuppressGCTransition]<int, int, int, int, void>)GetEntryPoint("glScissor");
+            _fpBlendFuncSeparate = (delegate* unmanaged[Cdecl, SuppressGCTransition]<BlendingFunc, BlendingFunc, BlendingFunc, BlendingFunc, void>)GetEntryPoint("glBlendFuncSeparate");
+            _fpBlendEquationSeparate = (delegate* unmanaged[Cdecl, SuppressGCTransition]<BlendEquationMode, BlendEquationMode, void>)GetEntryPoint("glBlendEquationSeparate");
+            _fpColorMask = (delegate* unmanaged[Cdecl, SuppressGCTransition]<byte, byte, byte, byte, void>)GetEntryPoint("glColorMask");
+#endif
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static unsafe bool Fast(void* fp)
+        {
+            if (fp != null && FastGL.Enabled)
+            {
+                FastGL.FastCalls++;
+                return true;
+            }
+            FastGL.SlowCalls++;
+            return false;
+        }
+
+        internal unsafe void FastBindTexture(TextureTarget target, int id)
+        { if (Fast(_fpBindTexture)) _fpBindTexture(target, id); else BindTexture(target, id); }
+        internal unsafe void FastActiveTexture(TextureUnit unit)
+        { if (Fast(_fpActiveTexture)) _fpActiveTexture(unit); else ActiveTexture(unit); }
+        internal unsafe void FastBindBuffer(BufferTarget target, int buffer)
+        { if (Fast(_fpBindBuffer)) _fpBindBuffer(target, buffer); else BindBuffer(target, buffer); }
+        internal unsafe void FastEnable(EnableCap cap)
+        { if (Fast(_fpEnable)) _fpEnable(cap); else Enable(cap); }
+        internal unsafe void FastDisable(EnableCap cap)
+        { if (Fast(_fpDisable)) _fpDisable(cap); else Disable(cap); }
+        internal unsafe void FastUniform4fv(int location, int count, Vector4* values)
+        { if (Fast(_fpUniform4fv)) _fpUniform4fv(location, count, values); else Uniform4fv(location, count, values); }
+        internal unsafe void FastUniform1i(int location, int value)
+        { if (Fast(_fpUniform1i)) _fpUniform1i(location, value); else Uniform1i(location, value); }
+        internal unsafe void FastUseProgram(int program)
+        { if (Fast(_fpUseProgram)) _fpUseProgram(program); else UseProgram(program); }
+        internal unsafe void FastVertexAttribPointer(int location, int elementCount, VertexAttribPointerType type, bool normalize, int stride, IntPtr data)
+        { if (Fast(_fpVertexAttribPointer)) _fpVertexAttribPointer(location, elementCount, type, (byte)(normalize ? 1 : 0), stride, data); else VertexAttribPointer(location, elementCount, type, normalize, stride, data); }
+        internal unsafe void FastEnableVertexAttribArray(int attrib)
+        { if (Fast(_fpEnableVertexAttribArray)) _fpEnableVertexAttribArray(attrib); else EnableVertexAttribArray(attrib); }
+        internal unsafe void FastDisableVertexAttribArray(int attrib)
+        { if (Fast(_fpDisableVertexAttribArray)) _fpDisableVertexAttribArray(attrib); else DisableVertexAttribArray(attrib); }
+        internal unsafe void FastVertexAttribDivisor(int location, int frequency)
+        { if (Fast(_fpVertexAttribDivisor)) _fpVertexAttribDivisor(location, frequency); else VertexAttribDivisor(location, frequency); }
+        internal unsafe void FastDrawElements(GLPrimitiveType primitiveType, int count, DrawElementsType elementType, IntPtr offset)
+        { if (Fast(_fpDrawElements)) _fpDrawElements(primitiveType, count, elementType, offset); else DrawElements(primitiveType, count, elementType, offset); }
+        internal unsafe void FastDrawArrays(GLPrimitiveType primitiveType, int offset, int count)
+        { if (Fast(_fpDrawArrays)) _fpDrawArrays(primitiveType, offset, count); else DrawArrays(primitiveType, offset, count); }
+        internal unsafe void FastDepthMask(bool enabled)
+        { if (Fast(_fpDepthMask)) _fpDepthMask((byte)(enabled ? 1 : 0)); else DepthMask(enabled); }
+        internal unsafe void FastDepthFunc(ComparisonFunc function)
+        { if (Fast(_fpDepthFunc)) _fpDepthFunc(function); else DepthFunc(function); }
+        internal unsafe void FastFrontFace(FrontFaceDirection direction)
+        { if (Fast(_fpFrontFace)) _fpFrontFace(direction); else FrontFace(direction); }
+        internal unsafe void FastCullFace(CullFaceMode mode)
+        { if (Fast(_fpCullFace)) _fpCullFace(mode); else CullFace(mode); }
+        internal unsafe void FastScissor(int x, int y, int width, int height)
+        { if (Fast(_fpScissor)) _fpScissor(x, y, width, height); else Scissor(x, y, width, height); }
+        internal unsafe void FastBlendFuncSeparate(BlendingFunc colorSrc, BlendingFunc colorDst, BlendingFunc alphaSrc, BlendingFunc alphaDst)
+        { if (Fast(_fpBlendFuncSeparate)) _fpBlendFuncSeparate(colorSrc, colorDst, alphaSrc, alphaDst); else BlendFuncSeparate(colorSrc, colorDst, alphaSrc, alphaDst); }
+        internal unsafe void FastBlendEquationSeparate(BlendEquationMode colorMode, BlendEquationMode alphaMode)
+        { if (Fast(_fpBlendEquationSeparate)) _fpBlendEquationSeparate(colorMode, alphaMode); else BlendEquationSeparate(colorMode, alphaMode); }
+        internal unsafe void FastColorMask(bool r, bool g, bool b, bool a)
+        { if (Fast(_fpColorMask)) _fpColorMask((byte)(r ? 1 : 0), (byte)(g ? 1 : 0), (byte)(b ? 1 : 0), (byte)(a ? 1 : 0)); else ColorMask(r, g, b, a); }
+
+        #endregion
 
     }
 }

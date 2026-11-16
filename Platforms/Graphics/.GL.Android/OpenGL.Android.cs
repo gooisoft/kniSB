@@ -84,6 +84,13 @@ namespace Microsoft.Xna.Platform.Graphics.OpenGL
             return FuncLoader.LoadFunction<T>(Library, function);
         }
 
+#if OCULUS
+        protected override IntPtr GetEntryPoint(string function)
+        {
+            return FuncLoader.dlsym(Library, function);
+        }
+#endif
+
         protected override T LoadFunctionOrNull<T>(string function)
         {
             return FuncLoader.LoadFunctionOrNull<T>(Library, function);

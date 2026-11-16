@@ -92,9 +92,9 @@ namespace Microsoft.Xna.Platform.Graphics
                     System.Diagnostics.Debug.Assert(_glTexture >= 0);
                     if (!isSharedContext)
                         ((IPlatformTextureCollection)base.GraphicsDeviceStrategy.CurrentContext.Textures).Strategy.Dirty(0);
-                    GL.ActiveTexture(TextureUnit.Texture0 + 0);
+                    GL.FastActiveTexture(TextureUnit.Texture0 + 0);
                     GL.CheckGLError();
-                    GL.BindTexture(TextureTarget.Texture2D, _glTexture);
+                    GL.FastBindTexture(TextureTarget.Texture2D, _glTexture);
                     GL.CheckGLError();
 
                     GL.PixelStore(PixelStoreParameter.UnpackAlignment, Math.Min(fSize, 8));
@@ -138,9 +138,9 @@ namespace Microsoft.Xna.Platform.Graphics
                     System.Diagnostics.Debug.Assert(_glTexture >= 0);
                     if (!isSharedContext)
                         ((IPlatformTextureCollection)base.GraphicsDeviceStrategy.CurrentContext.Textures).Strategy.Dirty(0);
-                    GL.ActiveTexture(TextureUnit.Texture0 + 0);
+                    GL.FastActiveTexture(TextureUnit.Texture0 + 0);
                     GL.CheckGLError();
-                    GL.BindTexture(TextureTarget.Texture2D, _glTexture);
+                    GL.FastBindTexture(TextureTarget.Texture2D, _glTexture);
                     GL.CheckGLError();
 
                     GL.PixelStore(PixelStoreParameter.UnpackAlignment, Math.Min(fSize, 8));
@@ -202,9 +202,9 @@ namespace Microsoft.Xna.Platform.Graphics
 
                 if (!isSharedContext)
                     ((IPlatformTextureCollection)base.GraphicsDeviceStrategy.CurrentContext.Textures).Strategy.Dirty(0);
-                GL.ActiveTexture(TextureUnit.Texture0 + 0);
+                GL.FastActiveTexture(TextureUnit.Texture0 + 0);
                 GL.CheckGLError();
-                GL.BindTexture(TextureTarget.Texture2D, _glTexture);
+                GL.FastBindTexture(TextureTarget.Texture2D, _glTexture);
                 GL.PixelStore(PixelStoreParameter.PackAlignment, Math.Min(TsizeInBytes, 8));
 
                 fixed (T* pData = &data[0])
@@ -338,9 +338,9 @@ namespace Microsoft.Xna.Platform.Graphics
 
                 if (!isSharedContext)
                     ((IPlatformTextureCollection)contextStrategy.Textures).Strategy.Dirty(0);
-                GL.ActiveTexture(TextureUnit.Texture0 + 0);
+                GL.FastActiveTexture(TextureUnit.Texture0 + 0);
                 GL.CheckGLError();
-                GL.BindTexture(TextureTarget.Texture2D, _glTexture);
+                GL.FastBindTexture(TextureTarget.Texture2D, _glTexture);
                 GL.CheckGLError();
 
                 // Set mipMap levels
