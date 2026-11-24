@@ -27,6 +27,15 @@ namespace Microsoft.Xna.Platform.Graphics.OpenGL
     public static class FastGL
     {
         public static bool Enabled = true;
+#if ANDROID
+        /// <summary>Sprite batches uploaded with one exactly-sized glBufferData (SpriteBatcher.ExactUpload); false = the
+        /// whole buffer orphaned on every flush, as before (Thortspace bench switch debug.ts.sborphan=1).</summary>
+        public static bool ExactSpriteUpload
+        {
+            get { return SpriteBatcher.ExactUpload; }
+            set { SpriteBatcher.ExactUpload = value; }
+        }
+#endif
         public static long FastCalls;
         public static long SlowCalls;
     }
@@ -1959,7 +1968,8 @@ namespace Microsoft.Xna.Platform.Graphics.OpenGL
         // Only calls that return quickly and never call back into managed code are here: binds, enables, uniforms,
         // vertex attributes, state and draws. Uploads, reads, waits and object creation keep the transition.
         // While one of these runs, a garbage collection on another thread waits for it to return (nothing worse).
-        // The pointers are loaded in OCULUS builds only; everywhere else each Fast method calls the delegate as before.
+        // The pointers are loaded in Android builds only (the Quest from 2026-11-16, the phone from 2026-11-24); everywhere
+        // else each Fast method calls the delegate as before.
         // FastGL.Enabled = false (Quest bench switch debug.ts.slowgl=1) also goes back to the delegates.
 
         private unsafe delegate* unmanaged[Cdecl, SuppressGCTransition]<TextureTarget, int, void> _fpBindTexture;
@@ -1993,7 +2003,7 @@ namespace Microsoft.Xna.Platform.Graphics.OpenGL
 
         private unsafe void LoadFastEntryPoints()
         {
-#if OCULUS
+#if ANDROID
             _fpBindTexture = (delegate* unmanaged[Cdecl, SuppressGCTransition]<TextureTarget, int, void>)GetEntryPoint("glBindTexture");
             _fpActiveTexture = (delegate* unmanaged[Cdecl, SuppressGCTransition]<TextureUnit, void>)GetEntryPoint("glActiveTexture");
             _fpBindBuffer = (delegate* unmanaged[Cdecl, SuppressGCTransition]<BufferTarget, int, void>)GetEntryPoint("glBindBuffer");

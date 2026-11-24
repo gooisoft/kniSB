@@ -51,8 +51,9 @@ namespace Microsoft.Xna.Platform.Graphics
         private VertexPositionColorTexture[] _vertexArray;
         private int _baseQuad;
         private DynamicVertexBuffer _vertexBuffer;
-#if OCULUS
-        /// <summary>Upload each batch with one exactly-sized glBufferData (see DrawBatch). Off = as before.</summary>
+#if ANDROID
+        /// <summary>Upload each batch with one exactly-sized glBufferData (see DrawBatch). Off = as before.
+        /// Quest from 2026-11-14, every Android build from 2026-11-24 (the phone's Do board).</summary>
         internal static bool ExactUpload = true;
 #endif
         private IndexBuffer _indexBuffer;
@@ -246,7 +247,7 @@ namespace Microsoft.Xna.Platform.Graphics
                     }
 
                     int stride = VertexPositionColorTexture.VertexDeclaration.VertexStride;
-#if OCULUS
+#if ANDROID
                     // GL always discards: that used to orphan the WHOLE buffer (sized to the largest batch ever drawn,
                     // 1.5 MB after a text-heavy frame) and then fill a corner of it, on every flush. One glBufferData of
                     // exactly the bytes used does both (2026-11-14, Do mode on the Quest). debug.ts.sborphan=1: as before.

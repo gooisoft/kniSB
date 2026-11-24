@@ -128,10 +128,10 @@ namespace Microsoft.Xna.Platform.Graphics
             }
         }
 
-#if OCULUS
+#if ANDROID
         /// <summary>
         ///     Replaces the buffer's store with exactly <paramref name="sizeInBytes" /> bytes from <paramref name="data" />,
-        ///     orphaning and filling it in one glBufferData sized to what is used (SpriteBatcher on the Quest).
+        ///     orphaning and filling it in one glBufferData sized to what is used (SpriteBatcher on Android: the Quest and the phone).
         /// </summary>
         internal void ReplaceStore(IntPtr data, int sizeInBytes)
         {

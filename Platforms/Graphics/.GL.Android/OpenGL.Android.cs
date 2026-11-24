@@ -84,7 +84,7 @@ namespace Microsoft.Xna.Platform.Graphics.OpenGL
             return FuncLoader.LoadFunction<T>(Library, function);
         }
 
-#if OCULUS
+#if ANDROID
         protected override IntPtr GetEntryPoint(string function)
         {
             return FuncLoader.dlsym(Library, function);
